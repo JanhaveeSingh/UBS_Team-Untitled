@@ -133,7 +133,7 @@ def parse_frac(expr: str) -> str:
 def parse_sum(expr: str) -> str:
     """Convert LaTeX summations into Python ``sum`` constructs.
 
-    The function searches for patterns of the form ``\sum_{i=lower}^{upper}``
+    The function searches for patterns of the form ``\\sum_{i=lower}^{upper}``
     followed by an expression.  The lower bound must specify the
     summation index and its starting value (e.g., ``i=1``).  The
     upper bound may be any Python expression.  The summand is
