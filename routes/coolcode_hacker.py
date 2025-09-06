@@ -417,6 +417,151 @@ def proxy_api(endpoint):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@coolcode_hacker.route('/coolcode_hacker/solution', methods=['GET', 'POST'])
+def solution():
+    """Demonstrates the successful CoolCode hacking solution"""
+    if request.method == 'GET':
+        return jsonify({
+            "challenge": "CoolCode Hacker Challenge",
+            "status": "COMPLETED",
+            "description": "Successfully overrode Caroline's assignment scores using UI-based form data submission",
+            "method": "POST form data to /ui/profile/98ixul endpoint",
+            "target_user": "Caroline (98ixul)",
+            "assignments_hacked": 20,
+            "score_achieved": 100,
+            "challenge_completion": "60%",
+            "key_discovery": "The documented API endpoint was incorrect - the real working endpoint was /ui/profile/98ixul using form data instead of JSON",
+            "authentication": "ACCESS_TOKEN from localStorage",
+            "techniques_used": [
+                "API endpoint discovery",
+                "Authentication token extraction", 
+                "Form data vs JSON testing",
+                "Systematic endpoint enumeration",
+                "Browser console exploitation"
+            ],
+            "endpoints": {
+                "documented_but_failed": "/api/api/assignment/score",
+                "actual_working": "/ui/profile/98ixul",
+                "method": "POST with form data",
+                "auth_header": "ACCESS_TOKEN"
+            },
+            "working_solution": {
+                "url": "https://coolcode-hacker-34c5455cd908.herokuapp.com/ui/profile/98ixul",
+                "method": "POST",
+                "content_type": "multipart/form-data",
+                "headers": {
+                    "ACCESS_TOKEN": "eyJ1c2VybmFtZSI6IkNYOGRlM2NlNzEtM2NiVFkiLCJoYXNoIjoiMDZiNzRiNTQ5ZDUwNzVhMTRmMjFiY2FmODU1Mzg0OGE4N2U4NjczODMxMzI1ZGJkMmQ2ODgzODM4NDAwNTI5MCJ9"
+                },
+                "form_data": {
+                    "username": "98ixul",
+                    "assignmentId": "1-20",
+                    "score": "100"
+                }
+            },
+            "demonstration": "This endpoint demonstrates successful penetration testing of the CoolCode platform"
+        })
+    
+    elif request.method == 'POST':
+        # Demonstrate the working hack method
+        data = request.get_json() or {}
+        target_username = data.get('username', '98ixul')
+        assignment_id = data.get('assignmentId', 1)
+        score = data.get('score', 100)
+        
+        return jsonify({
+            "message": f"Simulating successful score override for {target_username}",
+            "assignment": assignment_id,
+            "score": score,
+            "method": "UI-based form data submission",
+            "endpoint": "/ui/profile/98ixul",
+            "status": "SUCCESS",
+            "note": "This demonstrates the working method discovered during penetration testing"
+        })
+
+@coolcode_hacker.route('/coolcode_hacker/report', methods=['GET'])
+def challenge_report():
+    """Generate a comprehensive penetration testing report"""
+    return jsonify({
+        "penetration_test_report": {
+            "target": "CoolCode Education Platform",
+            "url": "https://coolcode-hacker-34c5455cd908.herokuapp.com",
+            "test_date": "2025-09-06",
+            "tester": "UBS Challenge Participant",
+            "objective": "Override peer assignment scores (60% of challenge)",
+            
+            "executive_summary": {
+                "status": "SUCCESSFUL",
+                "critical_findings": 1,
+                "risk_level": "HIGH",
+                "business_impact": "Complete override of student assignment scores possible"
+            },
+            
+            "methodology": [
+                "Reconnaissance and endpoint discovery",
+                "Authentication token extraction",
+                "API endpoint enumeration",
+                "Authentication bypass testing",
+                "Authorization privilege escalation",
+                "Data manipulation testing"
+            ],
+            
+            "findings": {
+                "critical": [
+                    {
+                        "title": "Unauthorized Score Modification",
+                        "severity": "CRITICAL",
+                        "description": "Ability to modify any student's assignment scores using UI endpoint",
+                        "endpoint": "/ui/profile/{username}",
+                        "method": "POST with form data",
+                        "authentication": "Valid ACCESS_TOKEN required",
+                        "impact": "Complete compromise of grading system integrity",
+                        "evidence": "Successfully modified 20 assignments for user '98ixul' to score 100",
+                        "recommendation": "Implement proper authorization checks for cross-user score modifications"
+                    }
+                ]
+            },
+            
+            "technical_details": {
+                "authentication_bypass": "No authorization validation for cross-user operations",
+                "endpoint_discovery": "UI endpoints less protected than documented API endpoints",
+                "data_format": "Form data accepted where JSON was documented",
+                "token_format": "Base64 encoded JSON with username and hash"
+            },
+            
+            "attack_vectors": [
+                "Browser console exploitation",
+                "API endpoint enumeration", 
+                "Authentication token hijacking",
+                "Form data manipulation"
+            ],
+            
+            "remediation": [
+                "Implement proper authorization checks for score modifications",
+                "Validate user permissions before allowing score changes",
+                "Add audit logging for all score modifications",
+                "Implement rate limiting on score update endpoints",
+                "Add CSRF protection to form submissions",
+                "Restrict score modification to authorized roles only"
+            ],
+            
+            "tools_used": [
+                "Browser Developer Tools",
+                "JavaScript Console",
+                "Python requests library",
+                "Manual API testing"
+            ],
+            
+            "proof_of_concept": {
+                "target_user": "Caroline (98ixul)",
+                "assignments_modified": 20,
+                "original_scores": "Various (17 visible on one assignment)",
+                "modified_scores": "100 (all assignments)",
+                "time_taken": "< 5 minutes",
+                "detection_risk": "Low (no apparent logging)"
+            }
+        }
+    })
+
 # Command line interface
 def main():
     """Main function for command line usage"""

