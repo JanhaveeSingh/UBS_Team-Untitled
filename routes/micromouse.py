@@ -143,6 +143,20 @@ class MicromouseController:
         # update map from sensors
         self._update_maze_map(game, pos, orient, sensors)
 
+        # Enhanced safety checks - prevent any movement into detected walls
+        # If we have any momentum and there's a wall in our path, brake immediately
+        if momentum != 0:
+            # Check if we're about to hit a wall based on our current momentum direction
+            if momentum > 0:  # Moving forward
+                if sensors[2] == 1:  # Front wall detected
+                    logger.warning("Front wall detected with forward momentum %s, emergency brake", momentum)
+                    return ['BB']
+            elif momentum < 0:  # Moving backward (rare but possible)
+                # For backward momentum, we'd need to check behind us, but sensors face forward
+                # Just brake to be safe
+                logger.warning("Backward momentum detected, emergency brake for safety")
+                return ['BB']
+
         # First check if we're completely blocked by walls
         # Check if front is blocked and we have momentum (would crash)
         if sensors[2] == 1 and momentum > 0:
@@ -284,10 +298,14 @@ class MicromouseController:
             if rot in (90, 270):
                 # Check if there are walls that would block the moving rotation
                 wall_blocking = False
-                if rot == 90 and sensors[4] == 1:  # Right turn but right sensor sees wall
-                    wall_blocking = True
-                elif rot == 270 and sensors[0] == 1:  # Left turn but left sensor sees wall
-                    wall_blocking = True
+                if rot == 90:  # Right turn
+                    # Check right sensor and right-front sensor
+                    if sensors[4] == 1 or sensors[3] == 1:
+                        wall_blocking = True
+                elif rot == 270:  # Left turn
+                    # Check left sensor and left-front sensor
+                    if sensors[0] == 1 or sensors[1] == 1:
+                        wall_blocking = True
                 
                 # moving-rotation possible only if m_eff <= 1 AND we have very low momentum AND no walls blocking
                 if m_eff <= 1.0 and cur_mom <= 1 and not wall_blocking:
@@ -398,14 +416,16 @@ class MicromouseController:
             if tok in ('F0R', 'F1R', 'F2R', 'F0L', 'F1L', 'F2L'):
                 # Extract the rotation direction
                 if tok.endswith('R'):
-                    # Right turn - check if there's a wall to the right after the turn
-                    if sensors[4]:  # Right sensor detects wall
-                        logger.warning("Real-time safety: right wall detected; blocking moving rotation %s", tok)
+                    # Right turn - check for walls in the path of the moving rotation
+                    # Check both the right sensor and the right-front sensor (diagonal)
+                    if sensors[4] or sensors[3]:  # Right sensor or right-front sensor detects wall
+                        logger.warning("Real-time safety: right/right-front wall detected; blocking moving rotation %s", tok)
                         return ['BB']
                 elif tok.endswith('L'):
-                    # Left turn - check if there's a wall to the left after the turn
-                    if sensors[0]:  # Left sensor detects wall
-                        logger.warning("Real-time safety: left wall detected; blocking moving rotation %s", tok)
+                    # Left turn - check for walls in the path of the moving rotation
+                    # Check both the left sensor and the left-front sensor (diagonal)
+                    if sensors[0] or sensors[1]:  # Left sensor or left-front sensor detects wall
+                        logger.warning("Real-time safety: left/left-front wall detected; blocking moving rotation %s", tok)
                         return ['BB']
             
             # If about to go forward (first forward token), but front sensor sees a wall, block
@@ -417,10 +437,10 @@ class MicromouseController:
             # If sequence starts with rotation then forward, and side sensor reports wall, block
             if i == 1 and tok.startswith('F') and len(out) >= 1 and out[0] in ('L', 'R'):
                 turn = out[0]
-                if turn == 'L' and sensors[0]:
+                if turn == 'L' and (sensors[0] or sensors[1]):  # Left turn but left/left-front sensors see wall
                     logger.warning("Real-time safety: left wall would block forward after left turn -> blocking")
                     return ['BB']
-                if turn == 'R' and sensors[4]:
+                if turn == 'R' and (sensors[4] or sensors[3]):  # Right turn but right/right-front sensors see wall
                     logger.warning("Real-time safety: right wall would block forward after right turn -> blocking")
                     return ['BB']
             
@@ -451,9 +471,13 @@ class MicromouseController:
 
         # if front is free and momentum >=0 => consider moving forward
         if sensors[2] == 0 and mom >= 0:
+            # Additional safety: also check diagonal sensors to avoid corner collisions
+            # Only move forward if both front and diagonal sensors are clear, or if we're already committed
+            front_safe = sensors[2] == 0 and (sensors[1] == 0 or sensors[3] == 0)  # Front and at least one diagonal clear
+            
             # Check if front cell leads toward goal or unexplored area
             front_pos = self._get_position_in_direction(pos, orientation, 0)  # 0° = front
-            if front_pos and (front_pos not in visited or self._is_closer_to_goal(front_pos, pos)):
+            if front_pos and front_safe and (front_pos not in visited or self._is_closer_to_goal(front_pos, pos)):
                 # Choose optimal movement token based on current momentum
                 if mom == 0:
                     return ['F2']  # Accelerate from rest
@@ -473,15 +497,15 @@ class MicromouseController:
         # Evaluate all possible directions and choose the best one
         direction_scores = []
         
-        # Right side
-        if sensors[4] == 0:
+        # Right side - check both right and right-front sensors for safety
+        if sensors[4] == 0 and sensors[3] == 0:  # Both right and right-front are clear
             right_pos = self._get_position_in_direction(pos, orientation, 90)  # 90° = right
             if right_pos:
                 score = self._calculate_direction_score(right_pos, visited, pos)
                 direction_scores.append((score, ['R', 'F2']))
         
-        # Left side
-        if sensors[0] == 0:
+        # Left side - check both left and left-front sensors for safety
+        if sensors[0] == 0 and sensors[1] == 0:  # Both left and left-front are clear
             left_pos = self._get_position_in_direction(pos, orientation, -90)  # -90° = left
             if left_pos:
                 score = self._calculate_direction_score(left_pos, visited, pos)
@@ -491,6 +515,15 @@ class MicromouseController:
         if direction_scores:
             direction_scores.sort(key=lambda x: x[0], reverse=True)
             return direction_scores[0][1]
+        
+        # If no side directions are available, consider a U-turn (180 degree turn)
+        # This requires two 90-degree turns
+        if sensors[2] == 1:  # Front is blocked, need to turn around
+            # Check if we can do a right-right turn (safer than left-left usually)
+            if sensors[4] == 0:  # Right side is clear for first turn
+                return ['R']  # Start the U-turn with a right turn
+            elif sensors[0] == 0:  # Left side is clear for first turn
+                return ['L']  # Start the U-turn with a left turn
         
         # All sides blocked - just brake and wait
         logger.warning("Exploration: All sides blocked, braking to avoid crash")
