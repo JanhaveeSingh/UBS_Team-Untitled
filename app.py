@@ -12,20 +12,15 @@ logger = logging.getLogger(__name__)
 @app.route('/', methods=['GET', 'POST'])
 def default_route():
     return jsonify({
-        "teamName": "UBS_Team-Untitled",
-        "status": "ACTIVE",
-        "members": [],
-        "score": 0
+        "name": "UBS_Team-Untitled",
+        "url": "https://ubs-team-untitled.onrender.com"
     })
 
 @app.route('/api/coolcodehackteam/<username>', methods=['GET', 'POST'])
 def register_team(username):
     return jsonify({
-        "username": "CX8de3ce71-3cbTY",
-        "password": "Gunraj@260905", 
-        "teamName": username,
-        "serverUrl": "https://ubs-team-untitled.onrender.com",
-        "status": "REGISTERED"
+        "name": username,
+        "url": "https://ubs-team-untitled.onrender.com"
     })
 
 @app.route('/test', methods=['GET', 'POST'])
