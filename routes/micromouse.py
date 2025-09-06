@@ -131,6 +131,28 @@ class MicromouseController:
         
         try:
             instructions = self._generate_instructions(game)
+            
+            # Final safety validation: prevent forward movement into walls
+            sensors = game['sensor_data'][:5] if len(game['sensor_data']) >= 5 else [0, 0, 0, 0, 0]
+            if len(sensors) >= 3 and sensors[2] == 1:  # Front wall detected
+                safe_instructions = []
+                for token in instructions:
+                    if token.startswith(('F', 'V')) and not token.startswith('BB'):
+                        console.info(f"🚨 FINAL SAFETY: Blocked forward move {token} due to front wall")
+                        logger.info(f"Final safety check: blocked forward move {token} due to front wall")
+                        continue
+                    safe_instructions.append(token)
+                
+                # If all instructions were filtered out, use safe fallback
+                if not safe_instructions and instructions:
+                    console.info("🚨 FINAL SAFETY: All moves blocked, using emergency rotation")
+                    logger.info("Final safety: all moves blocked, using emergency rotation")
+                    # Use rotation if at rest, otherwise brake
+                    momentum = game.get('momentum', 0)
+                    safe_instructions = ['L'] if momentum == 0 else ['BB']
+                
+                instructions = safe_instructions
+            
             return instructions, False
         except Exception as e:
             logger.info(f"Error generating instructions: {e}")
@@ -287,10 +309,15 @@ Current state:
 - Momentum: {momentum} (at rest)
 - Stuck counter was reset
 
+CRITICAL: Front sensor is {sensors[2]} {'(WALL - cannot move forward!)' if sensors[2] == 1 else '(clear)'}
+
 The mouse has been repeating the same movements. Choose a safe move to break the pattern.
 Only use moves valid at momentum 0: F0, F1, F2, V0, V1, V2, BB, L, R
 
-Respond with only a JSON array of 1-2 movement tokens, e.g., ["L"] or ["F1"]"""
+If front sensor = 1, you MUST NOT use any forward movement (F0, F1, F2, V0, V1, V2).
+Safe options when front blocked: L, R
+
+Respond with only a JSON array of 1-2 movement tokens, e.g., ["L"] or ["R"]"""
 
                 response = openai.chat.completions.create(
                     model="gpt-3.5-turbo",
@@ -307,6 +334,17 @@ Respond with only a JSON array of 1-2 movement tokens, e.g., ["L"] or ["F1"]"""
                 
                 if isinstance(instructions, list) and all(isinstance(token, str) for token in instructions):
                     valid_instructions = [token for token in instructions if token in self.valid_tokens]
+                    
+                    # CRITICAL: Filter out forward movement if front wall detected
+                    if len(sensors) >= 3 and sensors[2] == 1:  # Front wall
+                        safe_instructions = []
+                        for token in valid_instructions:
+                            if token.startswith(('F', 'V')) and not token.startswith('BB'):
+                                logger.info(f"Escape: filtered out forward move {token} due to front wall")
+                                continue
+                            safe_instructions.append(token)
+                        valid_instructions = safe_instructions
+                    
                     if valid_instructions:
                         logger.info(f"AI escape strategy: {valid_instructions}")
                         return valid_instructions
@@ -351,6 +389,12 @@ Respond with only a JSON array of 1-2 movement tokens, e.g., ["L"] or ["F1"]"""
             total_time = game.get('total_time_ms', 0)
             run_number = game.get('run', 0)
             
+            # CRITICAL SAFETY CHECK: Never move forward if front wall detected
+            if len(sensors) >= 3 and sensors[2] == 1:  # Front sensor detects wall
+                console.info("🚨 AI Safety Override: Front wall detected, cannot move forward")
+                logger.info("AI Safety Override: Front wall detected, using safe fallback")
+                return self._wall_follow_strategy(game)
+            
             # Create a prompt for the AI
             prompt = f"""You are controlling a micromouse in a 16x16 maze. Your goal is to reach the 2x2 center goal as quickly as possible.
 
@@ -362,23 +406,28 @@ Current state:
 - Total time used: {total_time}ms / 300000ms budget
 - Run number: {run_number}
 
-CRITICAL MOVEMENT RULES:
-- Rotations (L, R) ONLY allowed when momentum = 0
-- With momentum ≠ 0, you can only use: F0, F1, F2, V0, V1, V2, BB
-- Moving rotations (F0L, F1R, etc.) only if effective momentum ≤ 1
-- If momentum > 0 and front sensor = 1 (wall), you MUST brake (BB)
+CRITICAL SAFETY RULES:
+1. NEVER move forward (F0, F1, F2, V0, V1, V2) if front sensor = 1 (wall)
+2. Rotations (L, R) ONLY allowed when momentum = 0
+3. With momentum ≠ 0, you can only use: F0, F1, F2, V0, V1, V2, BB
+4. Moving rotations (F0L, F1R, etc.) only if effective momentum ≤ 1
+
+CURRENT SENSOR ANALYSIS:
+- Front sensor: {sensors[2]} {'(WALL - CANNOT MOVE FORWARD!)' if sensors[2] == 1 else '(clear)'}
+- Left sensor: {sensors[0]} {'(wall)' if sensors[0] == 1 else '(clear)'}
+- Right sensor: {sensors[4]} {'(wall)' if sensors[4] == 1 else '(clear)'}
 
 Available tokens based on current momentum {momentum}:
 {'- ALL tokens available (including L, R)' if momentum == 0 else '- Only longitudinal: F0, F1, F2, V0, V1, V2, BB (NO rotations L/R)'}
 
-Safety first: If front wall detected with forward momentum, use BB to brake.
+If front sensor = 1, you MUST choose from: L, R, or BB only (no forward movement).
 
-Choose 1-3 movement tokens that respect momentum rules. Consider:
-1. SAFETY: Don't crash into walls
+Choose 1-3 movement tokens that respect safety rules. Consider:
+1. SAFETY FIRST: Never crash into walls
 2. MOMENTUM RULES: No L/R unless momentum = 0
-3. Exploration using right-hand rule when safe
+3. Use right-hand rule for exploration when safe
 
-Respond with only a JSON array of movement tokens, e.g., ["F1"] or ["BB"]"""
+Respond with only a JSON array of movement tokens, e.g., ["L"] or ["R"]"""
 
             # Call OpenAI API
             response = openai.chat.completions.create(
@@ -414,6 +463,23 @@ Respond with only a JSON array of movement tokens, e.g., ["F1"] or ["BB"]"""
                                 continue
                             safe_instructions.append(token)
                         valid_instructions = safe_instructions
+                    
+                    # CRITICAL: Validate no forward movement when front wall detected
+                    if len(sensors) >= 3 and sensors[2] == 1:  # Front wall detected
+                        safe_instructions = []
+                        for token in valid_instructions:
+                            if token.startswith(('F', 'V')) and not token.startswith('BB'):  # Any forward movement
+                                console.info(f"🚫 Filtered out forward move {token} due to front wall")
+                                logger.info(f"Filtered out forward move {token} due to front wall")
+                                continue
+                            safe_instructions.append(token)
+                        valid_instructions = safe_instructions
+                        
+                        # If no valid instructions remain, fall back to safe move
+                        if not valid_instructions:
+                            console.info("🚨 All AI instructions filtered out due to front wall, using safe fallback")
+                            logger.info("All AI instructions filtered out due to front wall, using safe fallback")
+                            return self._wall_follow_strategy(game)
                     
                     if valid_instructions:
                         console.info(f"✅ AI Strategy Output: {valid_instructions}")
