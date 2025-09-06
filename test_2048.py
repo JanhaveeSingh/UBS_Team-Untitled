@@ -25,7 +25,7 @@ class Game2048:
             return False
         
         grid_size = len(grid)
-        self.grid_size = grid_size  # Update grid size dynamically
+        self.grid_size = grid_size
         
         for row in grid:
             if not isinstance(row, list) or len(row) != grid_size:
@@ -121,6 +121,9 @@ class Game2048:
     
     def process_row_left_advanced(self, row: List) -> List:
         """Process a single row moving left with all special tile rules"""
+        grid_size = len(row)
+        result = [None] * grid_size
+        
         # First, handle '0' tiles which act as barriers
         segments = []
         current_segment = []
@@ -137,23 +140,21 @@ class Game2048:
         if current_segment:
             segments.append(current_segment)
         
-        # Process each segment
-        processed_segments = []
+        # Process each segment and place in result
+        pos = 0
         for segment in segments:
             if segment == [0] or segment == ['0']:
-                processed_segments.append([0])  # Keep '0' as is
+                # Place '0' at its original position
+                original_pos = row.index(0) if 0 in row else row.index('0')
+                result[original_pos] = 0
+                pos = original_pos + 1
             else:
-                processed_segments.append(self.process_segment_left(segment))
+                processed_segment = self.process_segment_left(segment)
+                for val in processed_segment:
+                    if pos < grid_size and val is not None:
+                        result[pos] = val
+                        pos += 1
         
-        # Reconstruct the row
-        result = []
-        for segment in processed_segments:
-            result.extend(segment)
-        
-        # Pad with None to maintain row length
-        while len(result) < len(row):
-            result.append(None)
-            
         return result
     
     def process_segment_left(self, segment: List) -> List:
@@ -164,7 +165,7 @@ class Game2048:
         # Remove None values first
         non_none = [cell for cell in segment if cell is not None]
         if not non_none:
-            return [None] * len(segment)
+            return []
         
         # First pass: handle '1' + '*2' conversions
         processed = []
@@ -173,7 +174,7 @@ class Game2048:
             current = non_none[i]
             
             # Check if current is '1' and next is '*2'
-            if (current == 1 or current == '1') and i + 1 < len(non_none) and non_none[i + 1] == '*2':
+            if (current == 1 or current == '1') and i + 1 < len(non_none) and (non_none[i + 1] == '*2' or non_none[i + 1] == '×2'):
                 processed.append(2)  # Convert '1' to 2
                 i += 2  # Skip the '*2'
             else:
@@ -214,10 +215,6 @@ class Game2048:
                     result.append(current)
                     i += 1
         
-        # Pad with None to maintain segment length
-        while len(result) < len(segment):
-            result.append(None)
-            
         return result
     
     def move_left_advanced(self, grid: List[List]) -> Tuple[List[List], bool]:
@@ -449,4 +446,4 @@ def game_2048_endpoint():
         response.headers.add('Access-Control-Allow-Origin', '*')
         return response, 500
 
-# Keep the rest of your code unchanged (serve_2048_html and test_2048 functions)
+# Keep the original serve_2048_html and test_2048 functions exactly as they were
