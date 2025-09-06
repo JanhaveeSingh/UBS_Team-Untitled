@@ -175,40 +175,48 @@ class MazeExplorer:
         Determine the best next action for any crow using optimized exploration
         Returns (crow_id, action_type, direction_or_none)
         """
-        # Fast timeout checks
+        # Check completion status
         walls_found = len(game_state['discovered_walls'])
         total_walls = game_state['num_walls']
         moves_used = game_state['move_count']
-        max_moves = min(game_state['max_moves'], total_walls * 3)  # Much more aggressive limit
         
-        # Aggressive early submission for efficiency
-        efficiency_threshold = max(20, total_walls * 2)  # Much lower threshold
-        
-        if (walls_found >= total_walls or 
-            moves_used >= max_moves or
-            moves_used >= efficiency_threshold):
+        # Only submit when we actually found all walls
+        if walls_found >= total_walls:
             return None, 'submit', None
         
-        # Quick loop detection
-        recent_moves = game_state.get('recent_moves', deque())
-        if len(recent_moves) >= 4:
-            if len(set(recent_moves)) <= 2:  # Too much repetition
-                return None, 'submit', None
+        # More reasonable move limits based on problem size
+        grid_size = game_state.get('grid_size', 10)
+        reasonable_limit = min(grid_size * grid_size, total_walls * 5)  # Much more generous
         
-        # Fast scanning strategy - prioritize high-value scans only
+        # Only submit if we've used too many moves
+        if moves_used >= reasonable_limit:
+            return None, 'submit', None
+        
+        # Priority 1: Scan unexplored areas that are likely to have walls
+        best_scan_crow = None
+        best_scan_value = 0
+        
         for crow_id, crow_pos in crows.items():
             if not crow_pos or not isinstance(crow_pos, dict):
                 continue
             x, y = crow_pos['x'], crow_pos['y']
             
-            # Only scan if not already scanned and likely to find walls
+            # Only scan if not already scanned
             if (x, y) not in game_state['scan_results']:
-                # Quick scan value calculation
-                scan_value = self._quick_scan_value(x, y, game_state)
-                if scan_value > 8:  # Higher threshold for scanning
-                    return crow_id, 'scan', None
+                scan_value = self._calculate_scan_value(x, y, game_state)
+                if scan_value > best_scan_value:
+                    best_scan_value = scan_value
+                    best_scan_crow = crow_id
         
-        # Fast movement strategy - simple frontier exploration
+        # If we found a good scanning opportunity, take it
+        if best_scan_crow and best_scan_value > 5:
+            return best_scan_crow, 'scan', None
+        
+        # Priority 2: Move to unexplored areas
+        best_move_crow = None
+        best_move_direction = None
+        best_move_score = 0
+        
         for crow_id, crow_pos in crows.items():
             if not crow_pos or not isinstance(crow_pos, dict):
                 continue
@@ -217,16 +225,31 @@ class MazeExplorer:
             if x is None or y is None:
                 continue
             
-            # Try directions in order of priority
-            for direction in ['N', 'E', 'S', 'W']:  # Prioritize up and right
+            # Try all directions
+            for direction in ['N', 'E', 'S', 'W']:
                 if self._is_valid_move(crow_pos, direction, game_state):
                     new_x, new_y = self._get_new_position(x, y, direction)
+                    move_score = self._calculate_move_score(new_x, new_y, game_state)
                     
-                    # Only move to unexplored areas
-                    if (new_x, new_y) not in game_state['explored_cells']:
-                        return crow_id, 'move', direction
+                    if move_score > best_move_score:
+                        best_move_score = move_score
+                        best_move_crow = crow_id
+                        best_move_direction = direction
         
-        # If no good moves, submit immediately
+        # Make the best move if we found one
+        if best_move_crow and best_move_direction and best_move_score > 0:
+            return best_move_crow, 'move', best_move_direction
+        
+        # Priority 3: Scan current positions if nothing else to do
+        for crow_id, crow_pos in crows.items():
+            if not crow_pos or not isinstance(crow_pos, dict):
+                continue
+            x, y = crow_pos['x'], crow_pos['y']
+            
+            if (x, y) not in game_state['scan_results']:
+                return crow_id, 'scan', None
+        
+        # If we still haven't found all walls but no good actions, submit what we have
         return None, 'submit', None
     
     def _quick_scan_value(self, x, y, game_state):
@@ -246,22 +269,47 @@ class MazeExplorer:
         return unexplored * 3
     
     def _calculate_move_score(self, x, y, game_state):
-        """Fast move score calculation"""
+        """Calculate the value of moving to position (x, y)"""
         if not (0 <= x < self.grid_size and 0 <= y < self.grid_size):
             return 0
             
-        # Fast checks
+        # No value for explored cells or walls
         if (x, y) in game_state['explored_cells']:
-            return 1  # Low score for explored
+            return 1  # Very low score for explored
         if (x, y) in game_state['discovered_walls']:
             return 0  # No score for walls
             
-        # Simple score based on distance from explored areas
-        if game_state['explored_cells']:
-            min_dist = min(abs(x - ex) + abs(y - ey) 
-                          for ex, ey in list(game_state['explored_cells'])[:10])  # Limit for speed
-            return max(10, 20 - min_dist)
-        return 20
+        # Base score for unexplored cells
+        score = 10
+        
+        # Bonus for cells that can give us good scan coverage
+        scan_potential = 0
+        for dx in range(-2, 3):
+            for dy in range(-2, 3):
+                scan_x, scan_y = x + dx, y + dy
+                if (0 <= scan_x < self.grid_size and 0 <= scan_y < self.grid_size):
+                    if (scan_x, scan_y) not in game_state['explored_cells']:
+                        scan_potential += 1
+        
+        score += scan_potential
+        
+        # Bonus for frontier exploration (adjacent to explored areas)
+        adjacent_to_explored = False
+        for dx in [-1, 0, 1]:
+            for dy in [-1, 0, 1]:
+                if dx == 0 and dy == 0:
+                    continue
+                adj_x, adj_y = x + dx, y + dy
+                if (adj_x, adj_y) in game_state['explored_cells']:
+                    adjacent_to_explored = True
+                    break
+            if adjacent_to_explored:
+                break
+        
+        if adjacent_to_explored:
+            score += 5
+        
+        return score
         
         
                 
@@ -272,7 +320,7 @@ class MazeExplorer:
         
             
     def _calculate_scan_value(self, x, y, game_state):
-        """Fast scan value calculation"""
+        """Calculate the value of scanning at position (x, y)"""
         if not (0 <= x < self.grid_size and 0 <= y < self.grid_size):
             return 0
             
@@ -280,14 +328,24 @@ class MazeExplorer:
         if (x, y) in game_state['scan_results']:
             return 0
             
-        # Simple calculation - just count nearby unexplored cells
+        # Calculate value based on unexplored area in 5x5 scan range
         value = 0
-        for dx in range(-1, 2):  # Smaller area for speed
-            for dy in range(-1, 2):
+        for dx in range(-2, 3):  # Full 5x5 area
+            for dy in range(-2, 3):
                 check_x, check_y = x + dx, y + dy
                 if (0 <= check_x < self.grid_size and 0 <= check_y < self.grid_size):
                     if (check_x, check_y) not in game_state['explored_cells']:
-                        value += 2
+                        # Higher value for cells further from explored areas
+                        if game_state['explored_cells']:
+                            min_dist = min(abs(check_x - ex) + abs(check_y - ey) 
+                                         for ex, ey in game_state['explored_cells'])
+                            value += min(5, 1 + min_dist)
+                        else:
+                            value += 3
+        
+        # Bonus for edge areas (more likely to have walls)
+        if x < 2 or x >= self.grid_size - 2 or y < 2 or y >= self.grid_size - 2:
+            value += 5
         
         return value
         
@@ -359,8 +417,8 @@ def fog_of_wall():
         if not challenger_id or not game_id:
             return jsonify({'error': 'Missing challenger_id or game_id'}), 400
         
-        # Timeout check - if we've been running too long, submit immediately
-        if time.time() - start_time > 1.0:  # 1 second timeout
+        # Timeout check - only if we've been running too long
+        if time.time() - start_time > 25.0:  # Much more generous 25 second timeout
             if game_id in game_manager.games:
                 discovered_walls = game_manager.get_discovered_walls(game_id)
                 return jsonify({
@@ -451,17 +509,19 @@ def fog_of_wall():
         # Check if game is complete or move limit reached
         game_state = game_manager.games[game_id]
         
-        # More aggressive timeout handling - submit much earlier
+        # More balanced timeout handling
         walls_found = len(game_state['discovered_walls'])
         total_walls = game_state['num_walls']
         moves_used = game_state['move_count']
-        max_moves = min(game_state['max_moves'], total_walls * 2)  # Much more aggressive
+        grid_size = game_state.get('grid_size', 10)
         
-        # Very aggressive submission for timeout prevention
+        # More reasonable limits based on problem complexity
+        reasonable_move_limit = min(grid_size * grid_size, total_walls * 6)
+        
+        # Only submit early if we found all walls or used way too many moves
         should_submit = (
             walls_found >= total_walls or 
-            moves_used >= max_moves or
-            moves_used >= 30  # Hard limit to prevent timeout
+            moves_used >= reasonable_move_limit
         )
         
         if should_submit:
@@ -476,8 +536,8 @@ def fog_of_wall():
             
         # Get next action with timeout protection
         try:
-            # Final timeout check before algorithm
-            if time.time() - start_time > 2.0:  # 2 second absolute timeout
+            # Final timeout check before algorithm - more generous
+            if time.time() - start_time > 20.0:  # 20 second timeout
                 discovered_walls = game_manager.get_discovered_walls(game_id)
                 return jsonify({
                     'challenger_id': challenger_id,

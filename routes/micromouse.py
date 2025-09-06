@@ -420,13 +420,25 @@ class MicromouseController:
                 
                 # moving-rotation possible only if m_eff <= 1 AND we have very low momentum AND no walls blocking
                 if m_eff <= 1.0 and cur_mom <= 1 and not wall_blocking:
-                    # produce e.g. F1R or F2L depending on planned_token and rotation direction
-                    suffix = 'R' if rot == 90 else 'L'
-                    moving_token = planned_token + suffix
-                    # additionally must ensure moving rotation direction agrees with momentum sign: forward tokens require non-negative momentum or 0
-                    # cur_mom may be 0 or positive here
-                    if cur_mom >= 0:
-                        use_moving_rotation = True
+                    # Additional safety: check diagonal sensors for moving rotations
+                    diagonal_safe = True
+                    if rot == 90:  # Right turn - also check right-front diagonal
+                        if sensors[3] == 1:  # Right-front wall would block moving rotation
+                            diagonal_safe = False
+                    elif rot == 270:  # Left turn - also check left-front diagonal
+                        if sensors[1] == 1:  # Left-front wall would block moving rotation
+                            diagonal_safe = False
+                    
+                    if diagonal_safe:
+                        # produce e.g. F1R or F2L depending on planned_token and rotation direction
+                        suffix = 'R' if rot == 90 else 'L'
+                        moving_token = planned_token + suffix
+                        # additionally must ensure moving rotation direction agrees with momentum sign: forward tokens require non-negative momentum or 0
+                        # cur_mom may be 0 or positive here
+                        if cur_mom >= 0:
+                            use_moving_rotation = True
+                    else:
+                        use_moving_rotation = False
                 else:
                     use_moving_rotation = False
 
@@ -527,14 +539,20 @@ class MicromouseController:
             if tok in ('F0R', 'F1R', 'F2R', 'F0L', 'F1L', 'F2L'):
                 # Extract the rotation direction
                 if tok.endswith('R'):
-                    # Right turn - only check if the right side is blocked for the turn itself
+                    # Right turn - check both right side and right-front diagonal for moving rotation safety
                     if sensors[4]:  # Right sensor detects wall - can't turn right
                         logger.warning("Real-time safety: right wall detected; blocking moving rotation %s", tok)
                         return ['BB']
+                    if sensors[3]:  # Right-front diagonal wall would block moving rotation
+                        logger.warning("Real-time safety: right-front diagonal wall detected; blocking moving rotation %s", tok)
+                        return ['BB']
                 elif tok.endswith('L'):
-                    # Left turn - only check if the left side is blocked for the turn itself
+                    # Left turn - check both left side and left-front diagonal for moving rotation safety
                     if sensors[0]:  # Left sensor detects wall - can't turn left
                         logger.warning("Real-time safety: left wall detected; blocking moving rotation %s", tok)
+                        return ['BB']
+                    if sensors[1]:  # Left-front diagonal wall would block moving rotation
+                        logger.warning("Real-time safety: left-front diagonal wall detected; blocking moving rotation %s", tok)
                         return ['BB']
             
             # If about to go forward (first forward token), but front sensor sees a wall, block
