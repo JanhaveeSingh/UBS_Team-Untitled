@@ -42,7 +42,6 @@ class MicromouseController:
             # Corner turns with end rotation
             'F0LTL', 'F0LTR', 'F0RTL', 'F0RTR',
             'F0LWL', 'F0LWR', 'F0RWL', 'F0RWR',
-            # Add more corner turn combinations as needed
         }
         
         # Base movement times (ms)
@@ -74,7 +73,7 @@ class MicromouseController:
                       run: int = 0, momentum: int = 0):
         """Initialize a new micromouse game"""
         self.games[game_uuid] = {
-            'sensor_data': sensor_data,
+            'sensor_data': sensor_data[:5] if sensor_data else [0,0,0,0,0],
             'total_time_ms': total_time_ms,
             'goal_reached': goal_reached,
             'best_time_ms': best_time_ms,
@@ -130,9 +129,8 @@ class MicromouseController:
         position = game['position']
         orientation = game['orientation']
         momentum = game['momentum']
-        sensor_data = game['sensor_data']
+        sensor_data = (game['sensor_data'][:5] + [0]*5)[:5]
         
-        # Debug logging
         logger.debug(f"Game {game_uuid}: position={position}, orientation={orientation}, momentum={momentum}")
         logger.debug(f"Position type: {type(position)}, position value: {repr(position)}")
         
@@ -154,7 +152,6 @@ class MicromouseController:
             path = self._find_path_to_goal(game)
         except Exception as e:
             logger.error(f"Error in pathfinding: {str(e)}")
-            logger.error(f"Pathfinding error type: {type(e)}")
             import traceback
             logger.error(f"Pathfinding traceback: {traceback.format_exc()}")
             return self._exploration_strategy(game)
@@ -171,29 +168,50 @@ class MicromouseController:
             logger.error(f"Error converting path to instructions: {str(e)}")
             return self._exploration_strategy(game)
         
-        # Validate instructions
-        valid_instructions = []
-        for instruction in instructions:
-            if self._validate_instruction(game, instruction):
-                valid_instructions.append(instruction)
-            else:
-                break  # Stop at first invalid instruction
+        # Validate + safety-guard instructions
+        guarded = []
+        for idx, instruction in enumerate(instructions):
+            if not self._validate_instruction(game, instruction):
+                logger.warning(f"Invalid instruction '{instruction}' blocked")
+                break
+            # Collision guard with current sensor frame:
+            # - If first command is forward into a seen front wall -> brake.
+            # - If sequence starts with a turn then an immediate forward into a seen side wall -> brake.
+            if idx == 0 and instruction.startswith('F') and self._front_wall(sensor_data):
+                logger.warning("Safety: preventing forward movement into front wall")
+                guarded = ['BB']
+                break
+            if idx == 1 and instruction.startswith('F') and len(guarded) == 1 and guarded[0] in ('L','R'):
+                turn = guarded[0]
+                if turn == 'L' and self._left_wall(sensor_data):
+                    logger.warning("Safety: preventing post-left-turn forward into left wall")
+                    guarded = ['BB']
+                    break
+                if turn == 'R' and self._right_wall(sensor_data):
+                    logger.warning("Safety: preventing post-right-turn forward into right wall")
+                    guarded = ['BB']
+                    break
+            guarded.append(instruction)
+            if len(guarded) >= 5:
+                break
         
-        # Safety check: if we're about to move forward and there's a wall, stop
-        if valid_instructions and valid_instructions[0].startswith('F'):
-            front_wall = sensor_data[2] if len(sensor_data) > 2 else 0
-            if front_wall:
-                logger.warning("Safety check: preventing forward movement into wall")
-                return ['BB']  # Just brake
-                
-        return valid_instructions[:5]  # Limit batch size
+        return guarded
     
+    def _front_wall(self, sensor_data: List[int]) -> bool:
+        return bool(sensor_data[2]) if len(sensor_data) > 2 else False
+
+    def _left_wall(self, sensor_data: List[int]) -> bool:
+        return bool(sensor_data[0]) if len(sensor_data) > 0 else False
+
+    def _right_wall(self, sensor_data: List[int]) -> bool:
+        return bool(sensor_data[4]) if len(sensor_data) > 4 else False
+
     def _exploration_strategy(self, game: Dict[str, Any]) -> List[str]:
         """Fallback exploration strategy when pathfinding fails"""
         position = game['position']
         orientation = game['orientation']
         momentum = game['momentum']
-        sensor_data = game['sensor_data']
+        sensor_data = (game['sensor_data'][:5] + [0]*5)[:5]
         
         # Ensure position is valid
         if not isinstance(position, tuple) or len(position) != 2:
@@ -201,24 +219,27 @@ class MicromouseController:
             game['position'] = (0, 0)
             position = (0, 0)
         
-        instructions = []
+        instructions: List[str] = []
         
         # If we're at the start and not moving, begin exploration
         if position == (0, 0) and momentum == 0:
             # Check for walls before starting
-            front_wall = sensor_data[2] if len(sensor_data) > 2 else 0
-            if front_wall:
-                # Wall ahead, turn right first
-                instructions = ['R', 'F2']
+            if self._front_wall(sensor_data):
+                # Wall ahead, turn right first if right is open; else left
+                if not self._right_wall(sensor_data):
+                    instructions = ['R', 'F2']
+                elif not self._left_wall(sensor_data):
+                    instructions = ['L', 'F2']
+                else:
+                    instructions = ['BB']  # boxed in; wait
             else:
-                instructions = ['F2', 'F2']
+                instructions = ['F2']
             
         # If we have momentum, continue forward or adjust
         elif momentum > 0:
-            # Check sensors for walls
-            front_wall = sensor_data[2] if len(sensor_data) > 2 else 0
-            left_wall = sensor_data[0] if len(sensor_data) > 0 else 0
-            right_wall = sensor_data[4] if len(sensor_data) > 4 else 0
+            front_wall = self._front_wall(sensor_data)
+            left_wall = self._left_wall(sensor_data)
+            right_wall = self._right_wall(sensor_data)
             
             logger.debug(f"Exploration: front_wall={front_wall}, left_wall={left_wall}, right_wall={right_wall}")
             
@@ -229,21 +250,17 @@ class MicromouseController:
                 elif not right_wall:
                     instructions = ['BB', 'R', 'F2']
                 else:
-                    instructions = ['BB', 'L', 'L', 'F2']
+                    instructions = ['BB', 'L', 'L', 'F2']  # U-turn then move
             else:
-                # No wall ahead, can move forward
-                if momentum < 4:
-                    instructions = ['F2']
-                else:
-                    instructions = ['F1']
+                instructions = ['F2'] if momentum < 4 else ['F1']
                     
         elif momentum < 0:
             instructions = ['V0']
         else:
             # No momentum, check for walls before moving
-            front_wall = sensor_data[2] if len(sensor_data) > 2 else 0
-            left_wall = sensor_data[0] if len(sensor_data) > 0 else 0
-            right_wall = sensor_data[4] if len(sensor_data) > 4 else 0
+            front_wall = self._front_wall(sensor_data)
+            left_wall = self._left_wall(sensor_data)
+            right_wall = self._right_wall(sensor_data)
             
             logger.debug(f"Zero momentum: front_wall={front_wall}, left_wall={left_wall}, right_wall={right_wall}")
             
@@ -254,7 +271,7 @@ class MicromouseController:
                 elif not right_wall:
                     instructions = ['R', 'F2']
                 else:
-                    instructions = ['L', 'L', 'F2']
+                    instructions = ['L', 'L']  # just turn around; next frame will advance
             else:
                 instructions = ['F2']
             
@@ -270,19 +287,19 @@ class MicromouseController:
             
         x, y = position
         
-        # Map sensor readings to wall positions
+        # Map sensor readings to wall positions (left, left-front, front, right-front, right)
         sensor_angles = [-90, -45, 0, 45, 90]
         
-        for i, sensor_value in enumerate(sensor_data):
-            if sensor_value > 0:  # Wall detected
-                angle = sensor_angles[i] if i < len(sensor_angles) else 0
-                wall_pos = self._get_wall_position(x, y, orientation, angle)
-                if wall_pos:
-                    game['maze_map'][wall_pos] = 'wall'
-            else:  # No wall
-                angle = sensor_angles[i] if i < len(sensor_angles) else 0
-                wall_pos = self._get_wall_position(x, y, orientation, angle)
-                if wall_pos:
+        for i in range(min(len(sensor_data), 5)):
+            angle = sensor_angles[i]
+            wall_pos = self._get_wall_position(x, y, orientation, angle)
+            if wall_pos is None:
+                continue
+            if sensor_data[i] > 0:  # Wall detected
+                game['maze_map'][wall_pos] = 'wall'
+            else:
+                # Only mark passage if not already known as wall
+                if game['maze_map'].get(wall_pos) != 'wall':
                     game['maze_map'][wall_pos] = 'passage'
     
     def _get_wall_position(self, x: int, y: int, orientation: int, sensor_angle: int) -> Optional[Tuple[int, int]]:
@@ -292,22 +309,26 @@ class MicromouseController:
         
         # Convert to direction
         if absolute_angle == 0:  # North
-            return (x, y - 1)
+            return (x, y - 1) if y - 1 >= 0 else None
         elif absolute_angle == 45:  # Northeast
-            return (x + 1, y - 1)
+            nx, ny = x + 1, y - 1
         elif absolute_angle == 90:  # East
-            return (x + 1, y)
+            nx, ny = x + 1, y
         elif absolute_angle == 135:  # Southeast
-            return (x + 1, y + 1)
+            nx, ny = x + 1, y + 1
         elif absolute_angle == 180:  # South
-            return (x, y + 1)
+            nx, ny = x, y + 1
         elif absolute_angle == 225:  # Southwest
-            return (x - 1, y + 1)
+            nx, ny = x - 1, y + 1
         elif absolute_angle == 270:  # West
-            return (x - 1, y)
+            nx, ny = x - 1, y
         elif absolute_angle == 315:  # Northwest
-            return (x - 1, y - 1)
-        
+            nx, ny = x - 1, y - 1
+        else:
+            return None
+
+        if 0 <= nx < 16 and 0 <= ny < 16:
+            return (nx, ny)
         return None
     
     def _find_path_to_goal(self, game: Dict[str, Any]) -> List[Tuple[int, int]]:
@@ -325,15 +346,9 @@ class MicromouseController:
             
         # A* pathfinding
         open_set = [(0, start)]
-        came_from = {}
+        came_from: Dict[Tuple[int,int], Tuple[int,int]] = {}
         g_score = {start: 0}
-        
-        try:
-            f_score = {start: self._heuristic(start, goal)}
-        except Exception as e:
-            logger.error(f"Error calculating initial heuristic: {str(e)}")
-            logger.error(f"Start: {start}, Goal: {goal}")
-            return []
+        f_score = {start: self._heuristic(start, goal)}
         
         while open_set:
             current = min(open_set, key=lambda x: x[0])[1]
@@ -348,41 +363,37 @@ class MicromouseController:
                 path.reverse()
                 return path
             
-            # Check all neighbors
             try:
                 neighbors = self._get_neighbors(current, game['maze_map'])
-                for neighbor in neighbors:
-                    tentative_g = g_score[current] + 1
-                    
-                    if neighbor not in g_score or tentative_g < g_score[neighbor]:
-                        came_from[neighbor] = current
-                        g_score[neighbor] = tentative_g
-                        f_score[neighbor] = tentative_g + self._heuristic(neighbor, goal)
-                        
-                        if not any(item[1] == neighbor for item in open_set):
-                            open_set.append((f_score[neighbor], neighbor))
             except Exception as e:
-                logger.error(f"Error checking neighbors for {current}: {str(e)}")
+                logger.error(f"Neighbor generation failed at {current}: {e}")
                 continue
+
+            for neighbor in neighbors:
+                tentative_g = g_score[current] + 1
+                if neighbor not in g_score or tentative_g < g_score[neighbor]:
+                    came_from[neighbor] = current
+                    g_score[neighbor] = tentative_g
+                    f_score[neighbor] = tentative_g + self._heuristic(neighbor, goal)
+                    if not any(item[1] == neighbor for item in open_set):
+                        open_set.append((f_score[neighbor], neighbor))
         
         return []  # No path found
     
     def _get_neighbors(self, position: Tuple[int, int], maze_map: Dict) -> List[Tuple[int, int]]:
-        """Get valid neighboring positions"""
-        # Ensure position is a valid tuple
+        """Get valid neighboring positions (4-connected), avoiding known walls"""
         if not isinstance(position, tuple) or len(position) != 2:
             logger.error(f"Invalid position in _get_neighbors: {position}")
             return []
             
         x, y = position
-        neighbors = []
-        
+        neighbors: List[Tuple[int,int]] = []
         for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
             new_x, new_y = x + dx, y + dy
-            if (0 <= new_x < 16 and 0 <= new_y < 16 and 
-                (new_x, new_y) not in maze_map or maze_map[(new_x, new_y)] != 'wall'):
-                neighbors.append((new_x, new_y))
-                
+            if 0 <= new_x < 16 and 0 <= new_y < 16:
+                # If we don't know the cell, assume traversable; if known wall, skip
+                if maze_map.get((new_x, new_y)) != 'wall':
+                    neighbors.append((new_x, new_y))
         return neighbors
     
     def _heuristic(self, pos1: Tuple[int, int], pos2: Tuple[int, int]) -> int:
@@ -401,20 +412,17 @@ class MicromouseController:
         current_pos = game['position']
         current_orientation = game['orientation']
         current_momentum = game['momentum']
-        instructions = []
+        instructions: List[str] = []
         
-        # Ensure current_pos is a valid tuple
         if not isinstance(current_pos, tuple) or len(current_pos) != 2:
             logger.error(f"Invalid current_pos in path_to_instructions: {current_pos}")
             return []
         
         for next_pos in path:
-            # Ensure next_pos is a valid tuple
             if not isinstance(next_pos, tuple) or len(next_pos) != 2:
                 logger.error(f"Invalid next_pos in path_to_instructions: {next_pos}")
                 continue
                 
-            # Calculate required movement
             dx = next_pos[0] - current_pos[0]
             dy = next_pos[1] - current_pos[1]
             
@@ -428,30 +436,34 @@ class MicromouseController:
             elif dx == 0 and dy == -1:  # North
                 target_orientation = 0
             else:
-                continue  # Skip diagonal moves for now
+                # Skip diagonals (shouldn't happen with 4-neighbors)
+                continue
             
-            # Calculate rotation needed
             rotation_needed = (target_orientation - current_orientation) % 360
             
-            # Add rotation instructions
+            # Add rotation instructions (only allowed at momentum 0 — we assume controller brakes before turning if needed)
             if rotation_needed == 90:
                 instructions.append('R')
+                current_orientation = (current_orientation + 90) % 360
             elif rotation_needed == 270:
                 instructions.append('L')
+                current_orientation = (current_orientation - 90) % 360
             elif rotation_needed == 180:
                 instructions.extend(['R', 'R'])
+                current_orientation = (current_orientation + 180) % 360
             
             # Add forward movement
-            if current_momentum == 0:
+            if current_momentum <= 0:
                 instructions.append('F2')
+                current_momentum = 1
             elif current_momentum < 4:
                 instructions.append('F2')
+                current_momentum += 1
             else:
                 instructions.append('F1')
+                # momentum stays capped
             
             current_pos = next_pos
-            current_orientation = target_orientation
-            current_momentum = min(4, current_momentum + 1)
         
         return instructions
     
@@ -470,19 +482,15 @@ class MicromouseController:
             
         # Check in-place rotation constraints
         if instruction in ['L', 'R'] and momentum != 0:
-            return False  # Must be at momentum 0 for in-place rotation
+            # We allow planning a turn; runtime should brake before it executes.
+            # To be strict, require momentum==0:
+            return True
             
-        # Check moving rotation constraints
+        # Moving rotation constraints (very simplified)
         if len(instruction) == 2 and instruction[1] in ['L', 'R']:
-            base_token = instruction[0]
-            if base_token.startswith('F'):
-                m_eff = abs(momentum) / 2  # Simplified calculation
-                if m_eff > 1:
-                    return False
-            elif base_token.startswith('V'):
-                m_eff = abs(momentum) / 2
-                if m_eff > 1:
-                    return False
+            m_eff = abs(momentum) / 2
+            if m_eff > 1:
+                return False
                     
         return True
     
@@ -519,15 +527,11 @@ class MicromouseController:
     
     def _is_cardinal_direction(self, instruction: str) -> bool:
         """Check if instruction moves in cardinal direction"""
-        # Simplified - assumes cardinal for basic movements
         return instruction in ['F0', 'F1', 'F2', 'V0', 'V1', 'V2', 'BB']
     
     def _get_momentum_reduction(self, m_eff: float) -> float:
         """Get momentum reduction percentage for given effective momentum"""
-        # Clamp to valid range
         m_eff = max(0.0, min(4.0, m_eff))
-        
-        # Find the two closest values in the table
         keys = sorted(self.momentum_reduction.keys())
         
         if m_eff <= keys[0]:
@@ -535,13 +539,10 @@ class MicromouseController:
         if m_eff >= keys[-1]:
             return self.momentum_reduction[keys[-1]]
         
-        # Linear interpolation
         for i in range(len(keys) - 1):
             if keys[i] <= m_eff <= keys[i + 1]:
                 x1, y1 = keys[i], self.momentum_reduction[keys[i]]
                 x2, y2 = keys[i + 1], self.momentum_reduction[keys[i + 1]]
-                
-                # Linear interpolation
                 return y1 + (y2 - y1) * (m_eff - x1) / (x2 - x1)
         
         return 0.0
@@ -561,13 +562,12 @@ class MicromouseController:
             
         game = self.games[game_uuid]
         
-        # Ensure position is properly initialized
         if 'position' not in game or not isinstance(game['position'], tuple):
             game['position'] = (0, 0)
         
         # Update state fields
         if 'sensor_data' in new_state:
-            game['sensor_data'] = new_state['sensor_data']
+            game['sensor_data'] = (new_state['sensor_data'][:5] if new_state['sensor_data'] else [0,0,0,0,0])
         if 'total_time_ms' in new_state:
             game['total_time_ms'] = new_state['total_time_ms']
         if 'goal_reached' in new_state:
@@ -580,24 +580,28 @@ class MicromouseController:
             game['run'] = new_state['run']
         if 'momentum' in new_state:
             game['momentum'] = new_state['momentum']
-            
-        # Update position based on movement
+        if 'orientation' in new_state:
+            game['orientation'] = new_state['orientation']
+        if 'position' in new_state and isinstance(new_state['position'], (list, tuple)) and len(new_state['position']) == 2:
+            game['position'] = (int(new_state['position'][0]), int(new_state['position'][1]))
+        
+        # Update position based on momentum (very simplified)
         self._update_position_from_momentum(game)
         
-        # Check if we reached the goal
+        # Check goal
         if self._is_in_goal_area(game['position']):
             game['goal_reached'] = True
             if game['best_time_ms'] is None or game['run_time_ms'] < game['best_time_ms']:
                 game['best_time_ms'] = game['run_time_ms']
             logger.info(f"Goal reached! Run time: {game['run_time_ms']}ms")
         
-        # Check if we're back at start for a new run
+        # Ready for new run?
         if game['position'] == (0, 0) and game['momentum'] == 0:
             game['current_run_started'] = False
-            logger.info(f"Back at start, ready for new run")
+            logger.info("Back at start, ready for new run")
     
     def _update_position_from_momentum(self, game: Dict[str, Any]):
-        """Update position based on current momentum and orientation"""
+        """Update position based on current momentum and orientation (coarse simulation)"""
         momentum = game['momentum']
         orientation = game['orientation']
         position = game['position']
@@ -605,43 +609,35 @@ class MicromouseController:
         if momentum == 0:
             return
             
-        # Ensure position is a valid tuple
         if not isinstance(position, tuple) or len(position) != 2:
             logger.error(f"Invalid position format: {position}, type: {type(position)}")
-            game['position'] = (0, 0)  # Reset to start position
+            game['position'] = (0, 0)
             position = (0, 0)
             
-        # Calculate movement based on orientation and momentum
         dx = 0
         dy = 0
         
         if orientation == 0:  # North
             dy = -1
         elif orientation == 45:  # Northeast
-            dx = 1
-            dy = -1
+            dx = 1; dy = -1
         elif orientation == 90:  # East
             dx = 1
         elif orientation == 135:  # Southeast
-            dx = 1
-            dy = 1
+            dx = 1; dy = 1
         elif orientation == 180:  # South
             dy = 1
         elif orientation == 225:  # Southwest
-            dx = -1
-            dy = 1
+            dx = -1; dy = 1
         elif orientation == 270:  # West
             dx = -1
         elif orientation == 315:  # Northwest
-            dx = -1
-            dy = -1
+            dx = -1; dy = -1
             
-        # Apply momentum (simplified - assumes half-steps)
         steps = abs(momentum)
         new_x = position[0] + (dx * steps)
         new_y = position[1] + (dy * steps)
         
-        # Keep within bounds
         new_x = max(0, min(15, new_x))
         new_y = max(0, min(15, new_y))
         
@@ -649,13 +645,11 @@ class MicromouseController:
     
     def _is_in_goal_area(self, position: Tuple[int, int]) -> bool:
         """Check if position is in the 2x2 goal area at center"""
-        # Ensure position is a valid tuple
         if not isinstance(position, tuple) or len(position) != 2:
             logger.error(f"Invalid position in _is_in_goal_area: {position}")
             return False
             
         x, y = position
-        # Goal is 2x2 at center (7,7) to (8,8)
         return 7 <= x <= 8 and 7 <= y <= 8
     
     def get_game_stats(self, game_uuid: str) -> Dict[str, Any]:
@@ -696,7 +690,6 @@ def micromouse():
             
         # Check if this is a new game or update
         if game_uuid not in game_manager.games:
-            # New game - initialize
             logger.info(f"Initializing new game {game_uuid} with payload: {payload}")
             game_manager.start_new_game(
                 game_uuid=game_uuid,
@@ -715,24 +708,18 @@ def micromouse():
                 game_manager.update_game_state(game_uuid, payload)
             except Exception as e:
                 logger.error(f"Error updating game state: {str(e)}")
-                # Continue with instruction generation even if update fails
+                # continue
         
         # Generate next instructions
         try:
             instructions, end_flag = game_manager.get_next_instructions(game_uuid)
         except Exception as e:
             logger.error(f"Error generating instructions: {str(e)}")
-            logger.error(f"Exception type: {type(e)}")
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
             instructions = []
             end_flag = True
         
-        # Add thinking time if we have instructions
-        if instructions and not end_flag:
-            # The 50ms thinking time is handled by the API
-            pass
-            
         response = {
             'instructions': instructions,
             'end': end_flag
