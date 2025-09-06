@@ -154,10 +154,14 @@ class MicromouseController:
             path = self._find_path_to_goal(game)
         except Exception as e:
             logger.error(f"Error in pathfinding: {str(e)}")
+            logger.error(f"Pathfinding error type: {type(e)}")
+            import traceback
+            logger.error(f"Pathfinding traceback: {traceback.format_exc()}")
             return self._exploration_strategy(game)
         
         if not path:
             # No path found, use exploration strategy
+            logger.debug("No path found, using exploration strategy")
             return self._exploration_strategy(game)
         
         # Convert path to movement instructions
@@ -174,6 +178,13 @@ class MicromouseController:
                 valid_instructions.append(instruction)
             else:
                 break  # Stop at first invalid instruction
+        
+        # Safety check: if we're about to move forward and there's a wall, stop
+        if valid_instructions and valid_instructions[0].startswith('F'):
+            front_wall = sensor_data[2] if len(sensor_data) > 2 else 0
+            if front_wall:
+                logger.warning("Safety check: preventing forward movement into wall")
+                return ['BB']  # Just brake
                 
         return valid_instructions[:5]  # Limit batch size
     
@@ -194,7 +205,13 @@ class MicromouseController:
         
         # If we're at the start and not moving, begin exploration
         if position == (0, 0) and momentum == 0:
-            instructions = ['F2', 'F2']
+            # Check for walls before starting
+            front_wall = sensor_data[2] if len(sensor_data) > 2 else 0
+            if front_wall:
+                # Wall ahead, turn right first
+                instructions = ['R', 'F2']
+            else:
+                instructions = ['F2', 'F2']
             
         # If we have momentum, continue forward or adjust
         elif momentum > 0:
@@ -202,6 +219,8 @@ class MicromouseController:
             front_wall = sensor_data[2] if len(sensor_data) > 2 else 0
             left_wall = sensor_data[0] if len(sensor_data) > 0 else 0
             right_wall = sensor_data[4] if len(sensor_data) > 4 else 0
+            
+            logger.debug(f"Exploration: front_wall={front_wall}, left_wall={left_wall}, right_wall={right_wall}")
             
             if front_wall:
                 # Wall ahead, need to turn
@@ -212,6 +231,7 @@ class MicromouseController:
                 else:
                     instructions = ['BB', 'L', 'L', 'F2']
             else:
+                # No wall ahead, can move forward
                 if momentum < 4:
                     instructions = ['F2']
                 else:
@@ -220,7 +240,23 @@ class MicromouseController:
         elif momentum < 0:
             instructions = ['V0']
         else:
-            instructions = ['F2']
+            # No momentum, check for walls before moving
+            front_wall = sensor_data[2] if len(sensor_data) > 2 else 0
+            left_wall = sensor_data[0] if len(sensor_data) > 0 else 0
+            right_wall = sensor_data[4] if len(sensor_data) > 4 else 0
+            
+            logger.debug(f"Zero momentum: front_wall={front_wall}, left_wall={left_wall}, right_wall={right_wall}")
+            
+            if front_wall:
+                # Wall ahead, need to turn
+                if not left_wall:
+                    instructions = ['L', 'F2']
+                elif not right_wall:
+                    instructions = ['R', 'F2']
+                else:
+                    instructions = ['L', 'L', 'F2']
+            else:
+                instructions = ['F2']
             
         return instructions
     
@@ -291,7 +327,13 @@ class MicromouseController:
         open_set = [(0, start)]
         came_from = {}
         g_score = {start: 0}
-        f_score = {start: self._heuristic(start, goal)}
+        
+        try:
+            f_score = {start: self._heuristic(start, goal)}
+        except Exception as e:
+            logger.error(f"Error calculating initial heuristic: {str(e)}")
+            logger.error(f"Start: {start}, Goal: {goal}")
+            return []
         
         while open_set:
             current = min(open_set, key=lambda x: x[0])[1]
@@ -307,16 +349,21 @@ class MicromouseController:
                 return path
             
             # Check all neighbors
-            for neighbor in self._get_neighbors(current, game['maze_map']):
-                tentative_g = g_score[current] + 1
-                
-                if neighbor not in g_score or tentative_g < g_score[neighbor]:
-                    came_from[neighbor] = current
-                    g_score[neighbor] = tentative_g
-                    f_score[neighbor] = tentative_g + self._heuristic(neighbor, goal)
+            try:
+                neighbors = self._get_neighbors(current, game['maze_map'])
+                for neighbor in neighbors:
+                    tentative_g = g_score[current] + 1
                     
-                    if not any(item[1] == neighbor for item in open_set):
-                        open_set.append((f_score[neighbor], neighbor))
+                    if neighbor not in g_score or tentative_g < g_score[neighbor]:
+                        came_from[neighbor] = current
+                        g_score[neighbor] = tentative_g
+                        f_score[neighbor] = tentative_g + self._heuristic(neighbor, goal)
+                        
+                        if not any(item[1] == neighbor for item in open_set):
+                            open_set.append((f_score[neighbor], neighbor))
+            except Exception as e:
+                logger.error(f"Error checking neighbors for {current}: {str(e)}")
+                continue
         
         return []  # No path found
     
