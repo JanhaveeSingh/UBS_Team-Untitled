@@ -474,9 +474,6 @@ def duolingo_sort():
         return jsonify({"error": f"Server error: {str(e)}"}), 500
 
 
-@app.route('/health', methods=['GET'])
-def health_check():
-    return jsonify({"status": "healthy", "version": "2.0"})
 
 @app.route('/test', methods=['POST'])
 def test_parser():
