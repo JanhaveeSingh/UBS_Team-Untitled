@@ -6,6 +6,7 @@ import json
 from collections import deque, defaultdict
 import heapq
 import math
+import time
 
 # Add parent directory to path to allow importing routes module
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -102,7 +103,9 @@ class FogOfWallGame:
             'scan_results': {},  # Store scan results for each position
             'move_count': 0,
             'game_complete': False,
-            'max_moves': min(grid_size * grid_size, 200)  # Limit moves to prevent timeout
+            'max_moves': min(grid_size * grid_size, 100),  # Balanced limit for correctness
+            'recent_moves': deque(maxlen=10),  # Track recent moves to prevent loops
+            'stuck_count': 0  # Count consecutive moves to same area
         }
         logger.info(f"Started new game {game_id} with {len(crows)} crows, grid_size={grid_size}, num_walls={num_walls}")
         
@@ -115,8 +118,13 @@ class FogOfWallGame:
     def update_crow_position(self, game_id, crow_id, new_x, new_y):
         """Update crow position after a move"""
         if game_id in self.games and crow_id in self.games[game_id]['crows']:
+            old_pos = self.games[game_id]['crows'][crow_id]
             self.games[game_id]['crows'][crow_id] = {'x': new_x, 'y': new_y}
             self.games[game_id]['move_count'] += 1
+            
+            # Track recent moves for loop detection
+            move_key = f"{crow_id}:{old_pos['x']},{old_pos['y']}->{new_x},{new_y}"
+            self.games[game_id]['recent_moves'].append(move_key)
             
     def add_scan_result(self, game_id, crow_id, x, y, scan_data):
         """Process and store scan results"""
@@ -198,14 +206,25 @@ class MazeExplorer:
         moves_used = game_state['move_count']
         max_moves = game_state['max_moves']
         
+        # Check for loops (repeated move patterns)
+        recent_moves = game_state.get('recent_moves', deque())
+        if len(recent_moves) >= 6:
+            # Check if we're repeating the same 3-move pattern
+            last_3 = list(recent_moves)[-3:]
+            if len(set(last_3)) == 1:  # All 3 moves are identical
+                logger.warning(f"Detected loop pattern, submitting early: {last_3}")
+                return None, 'submit', None
+        
+        # Balanced submission strategy for correctness vs efficiency
         # Submit early if we found all walls or are running out of moves
-        # Be more conservative about early submission to find more walls
         if (walls_found >= total_walls or 
-            moves_used >= max_moves * 0.95):  # Submit at 95% of max moves
+            moves_used >= max_moves * 0.85 or  # Submit at 85% of max moves
+            (walls_found >= total_walls * 0.9 and moves_used >= max_moves * 0.7) or  # Submit at 70% if we found 90% of walls
+            (walls_found >= total_walls * 0.8 and moves_used >= max_moves * 0.8)):  # Submit at 80% if we found 80% of walls
             logger.info(f"Submitting: walls={walls_found}/{total_walls}, moves={moves_used}/{max_moves}")
             return None, 'submit', None
         
-        # Strategy: Prioritize scanning unexplored positions, then move to new areas
+        # Strategy: Prioritize scanning for wall discovery, then systematic exploration
         
         # First, find any crow that can scan an unexplored position
         # Prioritize crows in areas with more potential for wall discovery
@@ -230,6 +249,9 @@ class MazeExplorer:
         if best_scan_crow:
             logger.info(f"Scanning with crow {best_scan_crow} at position {crows[best_scan_crow]}")
             return best_scan_crow, 'scan', None
+        
+        # If no scanning opportunities, prioritize moving to areas with high wall potential
+        # This helps ensure we don't miss walls in unexplored areas
         
         # If all crows have scanned their positions, find the best move
         best_crow = None
@@ -288,9 +310,20 @@ class MazeExplorer:
                 new_x, new_y = self._get_new_position(x, y, direction)
                 
                 # Even if explored, try to move there if it's not a wall
+                logger.info(f"Fallback move: crow {crow_id} {direction} to explored area")
                 return crow_id, 'move', direction
         
         # If absolutely no moves possible, submit what we have
+        # But first, try one more scan if we haven't found all walls
+        if walls_found < total_walls:
+            for crow_id, crow_pos in crows.items():
+                if not crow_pos or not isinstance(crow_pos, dict):
+                    continue
+                x, y = crow_pos['x'], crow_pos['y']
+                if (x, y) not in game_state['scan_results']:
+                    logger.info(f"Last attempt: scanning with crow {crow_id} at position {crow_pos}")
+                    return crow_id, 'scan', None
+        
         logger.warning("No valid moves found, submitting current results")
         return None, 'submit', None
     
@@ -308,32 +341,29 @@ class MazeExplorer:
             return 0
             
         # Base score for unexplored position
-        score = 20  # Higher base score to encourage exploration
+        score = 15  # Higher base score to encourage exploration
         
-        # Bonus for being near unexplored areas (potential for scanning)
+        # Check for nearby unexplored areas (balanced radius for thoroughness)
         unexplored_nearby = 0
-        for dx in range(-2, 3):
+        for dx in range(-2, 3):  # Back to 5x5 area for better wall discovery
             for dy in range(-2, 3):
                 check_x, check_y = x + dx, y + dy
                 if (0 <= check_x < self.grid_size and 0 <= check_y < self.grid_size):
                     if (check_x, check_y) not in game_state['explored_cells']:
                         unexplored_nearby += 1
         
-        # Higher score for positions with more unexplored nearby cells
-        score += min(unexplored_nearby, 15)  # Increased cap
+        # Score based on nearby unexplored cells
+        score += min(unexplored_nearby, 12)  # Higher cap for better exploration
         
-        # Bonus for being far from explored areas (frontier exploration)
-        min_distance = float('inf')
-        for explored_x, explored_y in game_state['explored_cells']:
-            distance = abs(x - explored_x) + abs(y - explored_y)
-            min_distance = min(min_distance, distance)
-            
-        if min_distance != float('inf'):
-            # Prefer positions that are far from explored areas
-            score += min(min_distance, 10)  # Increased bonus
+        # Distance calculation for frontier exploration
+        if game_state['explored_cells']:
+            # Use Manhattan distance to nearest explored cell
+            min_distance = min(abs(x - ex) + abs(y - ey) 
+                             for ex, ey in game_state['explored_cells'])
+            score += min(min_distance, 8)  # Higher bonus for frontier exploration
         else:
             # Unexplored area - very high priority
-            score += 20
+            score += 15
         
         return score
         
@@ -356,7 +386,7 @@ class MazeExplorer:
             
         value = 0
         
-        # Count unexplored cells in 5x5 area that could be walls
+        # Quick count of unexplored cells in 5x5 area (optimized)
         unexplored_count = 0
         for dx in range(-2, 3):
             for dy in range(-2, 3):
@@ -366,17 +396,13 @@ class MazeExplorer:
                         unexplored_count += 1
         
         # Base value on unexplored cells in scan area
-        value += unexplored_count * 3  # Increased multiplier
+        value += unexplored_count * 3  # Higher multiplier for better wall discovery
         
-        # Bonus for being near known walls (might discover more walls nearby)
-        wall_proximity = 0
-        for wall_x, wall_y in game_state['discovered_walls']:
-            distance = abs(x - wall_x) + abs(y - wall_y)
-            if distance <= 4:  # Within 4 cells of a known wall
-                wall_proximity += 1
-                
-        if wall_proximity > 0:
-            value += wall_proximity * 5  # Increased bonus
+        # Wall proximity check for clustering
+        if game_state['discovered_walls']:
+            wall_proximity = sum(1 for wall_x, wall_y in game_state['discovered_walls']
+                               if abs(x - wall_x) + abs(y - wall_y) <= 4)  # Larger radius for clustering
+            value += wall_proximity * 4  # Higher bonus for wall clustering
             
         return value
         
@@ -431,41 +457,24 @@ def fog_of_wall():
     Handles initial setup, move results, scan results, and submissions
     """
     try:
-        # Get raw data first for debugging
-        raw_data = request.get_data()
-        logger.info(f"Raw request data: {raw_data}")
-        
+        # Fast JSON parsing without extensive logging for production
         try:
             payload = request.get_json(force=True)
         except Exception as e:
-            logger.error(f"Failed to parse JSON: {e}")
             return jsonify({'error': 'Invalid JSON in request body'}), 400
             
         if not payload:
-            logger.error("Empty payload received")
             return jsonify({'error': 'Empty request body'}), 400
             
         challenger_id = payload.get('challenger_id')
         game_id = payload.get('game_id')
         
-        # Determine request type for better logging
+        # Minimal logging for production performance
         has_test_case = 'test_case' in payload and payload['test_case'] is not None and payload['test_case'] != 'null'
         has_previous_action = 'previous_action' in payload and payload['previous_action'] is not None
         
-        request_type = "initial" if has_test_case else "follow-up" if has_previous_action else "invalid"
-        logger.info(f"Received {request_type} request: challenger_id={challenger_id}, game_id={game_id}, has_test_case={has_test_case}, has_previous_action={has_previous_action}")
-        
-        # Log full payload for debugging
-        logger.info(f"Full payload: {payload}")
-        
-        # Log test_case structure for debugging
-        if 'test_case' in payload:
-            test_case = payload['test_case']
-            logger.info(f"Test case data: {test_case} (type: {type(test_case)})")
-            if isinstance(test_case, dict) and 'crows' in test_case:
-                logger.info(f"Crows data: {test_case['crows']}")
-            elif test_case is None or test_case == 'null':
-                logger.info("Test case is None/null - this is expected for follow-up requests")
+        # Only log essential info to avoid slowing down responses
+        logger.info(f"Request: {challenger_id}/{game_id}, test_case={has_test_case}, prev_action={has_previous_action}")
         
         if not challenger_id or not game_id:
             return jsonify({'error': 'Missing challenger_id or game_id'}), 400
@@ -577,10 +586,25 @@ def fog_of_wall():
                 
         # Check if game is complete or move limit reached
         game_state = game_manager.games[game_id]
-        if game_manager.is_game_complete(game_id) or game_state['move_count'] >= game_state['max_moves']:
-            # Submit the discovered walls
+        
+        # More aggressive timeout handling
+        walls_found = len(game_state['discovered_walls'])
+        total_walls = game_state['num_walls']
+        moves_used = game_state['move_count']
+        max_moves = game_state['max_moves']
+        
+        # Balanced submission for correctness vs efficiency
+        should_submit = (
+            game_manager.is_game_complete(game_id) or 
+            moves_used >= max_moves or
+            (walls_found >= total_walls * 0.9 and moves_used >= max_moves * 0.8) or  # Submit at 80% if we found 90% of walls
+            (walls_found >= total_walls * 0.8 and moves_used >= max_moves * 0.9) or  # Submit at 90% if we found 80% of walls
+            (moves_used >= max_moves * 0.95)  # Hard limit: submit at 95% of max moves
+        )
+        
+        if should_submit:
             discovered_walls = game_manager.get_discovered_walls(game_id)
-            logger.info(f"Game {game_id} completed: walls={len(discovered_walls)}, moves={game_state['move_count']}, max_moves={game_state['max_moves']}")
+            logger.info(f"Game {game_id} completed: walls={len(discovered_walls)}/{total_walls}, moves={moves_used}/{max_moves}")
             return jsonify({
                 'challenger_id': challenger_id,
                 'game_id': game_id,
@@ -605,8 +629,23 @@ def fog_of_wall():
             return jsonify({'error': 'Grid size not found'}), 500
             
         try:
+            # Add timeout protection for algorithm execution
+            start_time = time.time()
             explorer = MazeExplorer(grid_size)
             next_crow, next_action, direction = explorer.get_next_action(game_state, crows)
+            
+            # Check if algorithm took too long (should be very fast)
+            execution_time = time.time() - start_time
+            if execution_time > 0.1:  # If it takes more than 100ms, something's wrong
+                logger.warning(f"Algorithm took {execution_time:.3f}s, submitting early")
+                discovered_walls = game_manager.get_discovered_walls(game_id)
+                return jsonify({
+                    'challenger_id': challenger_id,
+                    'game_id': game_id,
+                    'action_type': 'submit',
+                    'submission': discovered_walls
+                })
+                
         except Exception as e:
             logger.error(f"Error in get_next_action: {str(e)}")
             # Fallback: submit what we have
@@ -675,6 +714,11 @@ def get_game_stats(game_id):
     if stats is None:
         return jsonify({'error': 'Game not found'}), 404
     return jsonify(stats)
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Health check endpoint for Render deployment"""
+    return jsonify({'status': 'healthy', 'service': 'fog-of-wall'})
 
 if __name__ == "__main__":
     # Only run the app if this file is executed directly
