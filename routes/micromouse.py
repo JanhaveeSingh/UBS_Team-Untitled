@@ -124,41 +124,42 @@ class MicromouseController:
             
         game = self.games[game_uuid]
         
-        # Check end conditions per spec
+        # Check end conditions per spec - but be more lenient for testing
         if game['total_time_ms'] >= self.TIME_BUDGET:
             logger.info("Time budget exhausted, ending game")
             return [], True
         
-        # Allow more runs for better maze completion chances
-        if game['run'] >= 15:  # Increased from 10 to allow more attempts
+        # Just try a few runs to get it working
+        if game['run'] >= 5:  # Reduced to 5 for faster testing
             logger.info("Maximum runs reached, ending game")
             return [], True
         
         try:
-            instructions = self._generate_instructions(game)
-            
-            # Final safety validation: prevent forward movement into walls
+            # SIMPLE HARDCODED APPROACH - no complex logic
+            momentum = game['momentum']
             sensors = game['sensor_data'][:5] if len(game['sensor_data']) >= 5 else [0, 0, 0, 0, 0]
-            if len(sensors) >= 3 and sensors[2] == 1:  # Front wall detected
-                safe_instructions = []
-                for token in instructions:
-                    if token.startswith(('F', 'V')) and not token.startswith('BB'):
-                        console.info(f"🚨 FINAL SAFETY: Blocked forward move {token} due to front wall")
-                        logger.info(f"Final safety check: blocked forward move {token} due to front wall")
-                        continue
-                    safe_instructions.append(token)
-                
-                # If all instructions were filtered out, use safe fallback
-                if not safe_instructions and instructions:
-                    console.info("🚨 FINAL SAFETY: All moves blocked, using emergency rotation")
-                    logger.info("Final safety: all moves blocked, using emergency rotation")
-                    # Use rotation if at rest, otherwise brake
-                    momentum = game.get('momentum', 0)
-                    safe_instructions = ['L'] if momentum == 0 else ['BB']
-                
-                instructions = safe_instructions
+            goal_reached = game.get('goal_reached', False)
             
+            # If goal reached, brake and stop
+            if goal_reached:
+                if momentum != 0:
+                    console.info("🎯 Goal reached, braking")
+                    return ['BB'], False
+                else:
+                    console.info("🏆 Goal reached and stopped!")
+                    return [], False
+            
+            # Safety check for momentum
+            if momentum > 0 and len(sensors) > 2 and sensors[2] == 1:
+                console.info("🚨 Emergency brake - front wall with momentum")
+                return ['BB'], False
+            
+            # Use the simple strategy
+            instructions = self._simple_hardcoded_strategy(game)
+            
+            console.info(f"🤖 Simple strategy output: {instructions}")
             return instructions, False
+            
         except Exception as e:
             logger.info(f"Error generating instructions: {e}")
             logger.info(traceback.format_exc())
@@ -196,18 +197,9 @@ class MicromouseController:
             logger.info("Front wall detected with forward momentum, braking")
             return ['BB']
         
-        # Detect if stuck in loop
-        if self._is_stuck_in_loop(game):
-            console.info("🔄 Decision: Loop detected, calling escape strategy")
-            return self._escape_loop(game)
-        
-        # Use AI-enhanced strategy if available, otherwise fall back to wall following
-        if OPENAI_AVAILABLE and game.get('total_time_ms', 0) < 280000:  # Use AI for first 280 seconds (extended)
-            console.info("🤖 Decision: Using AI-enhanced strategy")
-            return self._ai_enhanced_strategy(game)
-        else:
-            console.info("🧱 Decision: Using wall-following strategy")
-            return self._wall_follow_strategy(game)
+        # HARDCODED SIMPLE STRATEGY - Just use basic wall following
+        console.info("🤖 Decision: Using hardcoded simple strategy")
+        return self._simple_hardcoded_strategy(game)
 
     def _wall_follow_strategy(self, game: Dict[str, Any]) -> List[str]:
         """Implement enhanced wall following strategy with loop detection and goal seeking"""
@@ -448,6 +440,44 @@ Respond with only a JSON array of 1-2 movement tokens, e.g., ["L"] or ["R"]"""
         # Last resort: turn around (two right turns)
         logger.info("Escape: turning around")
         return ['R']  # Just one turn for now, will turn again next cycle
+
+    def _simple_hardcoded_strategy(self, game: Dict[str, Any]) -> List[str]:
+        """Ultra-simple strategy that should work reliably"""
+        momentum = game['momentum']
+        sensors = game['sensor_data'][:5] if len(game['sensor_data']) >= 5 else [0, 0, 0, 0, 0]
+        
+        # Sensors are: [left(-90°), left-front(-45°), front(0°), right-front(45°), right(90°)]
+        left, left_front, front, right_front, right = sensors
+        
+        console.info(f"💡 Simple Strategy - Momentum: {momentum}, Sensors: {sensors}")
+        
+        # Handle momentum first - very simple
+        if momentum > 0:
+            if front == 1:  # Wall ahead, must brake
+                console.info("� BRAKE: Wall ahead")
+                return ['BB']
+            # Keep going forward
+            console.info("➡️ CONTINUE: Moving forward")
+            return ['F1']
+        elif momentum < 0:
+            console.info("� BRAKE: Stopping backward movement")
+            return ['BB']
+        
+        # At rest - use dead simple wall following
+        # Just: Front > Right > Left > Turn around
+        
+        if front == 0:  # Can go forward
+            console.info("⬆️ FORWARD: Path clear ahead")
+            return ['F1']
+        elif right == 0:  # Can turn right
+            console.info("➡️ RIGHT: Turning right")
+            return ['R']
+        elif left == 0:  # Can turn left
+            console.info("⬅️ LEFT: Turning left")
+            return ['L']
+        else:  # Blocked everywhere, turn around
+            console.info("🔄 TURN: All blocked, turning")
+            return ['R']
 
     def _ai_enhanced_strategy(self, game: Dict[str, Any]) -> List[str]:
         """Use OpenAI to make intelligent navigation decisions"""
