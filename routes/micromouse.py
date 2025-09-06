@@ -1,775 +1,265 @@
-"""
-Micromouse Controller - AI-Enhanced implementation
-Implements the micromouse movement specification with OpenAI-powered decision making.
-"""
-
-import logging
-import traceback
-import math
-import os
 import json
+import logging
+import math
 from collections import deque
-from typing import Dict, List, Tuple, Optional, Any
-from flask import request, jsonify
+from typing import List, Tuple, Dict, Set, Optional
 
-# Console-like logging for JavaScript-style debugging
-class Console:
-    @staticmethod
-    def info(*args):
-        message = ' '.join(str(arg) for arg in args)
-        print(f"[CONSOLE.INFO] {message}")
-        
-    @staticmethod
-    def log(*args):
-        message = ' '.join(str(arg) for arg in args)
-        print(f"[CONSOLE.LOG] {message}")
-
-console = Console()
-
-try:
-    import openai
-    openai.api_key = os.environ.get("OPENAI_API_KEY")
-    OPENAI_AVAILABLE = bool(openai.api_key)
-except ImportError:
-    OPENAI_AVAILABLE = False
-    openai = None
+from flask import request
 
 from routes import app
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
 
-
-class MicromouseController:
-    """Micromouse game state manager and controller (full spec compliance)"""
-
-    def __init__(self):
-        self.games: Dict[str, Dict[str, Any]] = {}
-
-        # Valid movement tokens per spec
-        self.valid_tokens = {
-            # Longitudinal
-            'F0', 'F1', 'F2', 'V0', 'V1', 'V2', 'BB',
-            # In-place rotations
-            'L', 'R',
-            # Moving rotations
-            'F0L', 'F0R', 'F1L', 'F1R', 'F2L', 'F2R',
-            'V0L', 'V0R', 'V1L', 'V1R', 'V2L', 'V2R',
-            'BBL', 'BBR',
-            # Corner turns (cardinal directions only)
-            'F0LT', 'F0RT', 'F0LW', 'F0RW',
-            'F1LT', 'F1RT', 'F1LW', 'F1RW', 
-            'F2LT', 'F2RT', 'F2LW', 'F2RW',
-            'V0LT', 'V0RT', 'V0LW', 'V0RW',
-            'V1LT', 'V1RT', 'V1LW', 'V1RW',
-            'V2LT', 'V2RT', 'V2LW', 'V2RW'
-        }
-
-        # Movement base times per spec
-        self.base_times = {
-            'in_place_turn': 200,
-            'default_action': 200,
-            'half_step_cardinal': 500,
-            'half_step_intercardinal': 600,
-            'corner_tight': 700,
-            'corner_wide': 1400
-        }
-
-        # Momentum reduction table per spec
-        self.momentum_reduction = {
-            0.0: 0.00,
-            0.5: 0.10,
-            1.0: 0.20,
-            1.5: 0.275,
-            2.0: 0.35,
-            2.5: 0.40,
-            3.0: 0.45,
-            3.5: 0.475,
-            4.0: 0.50
-        }
-
-        # Constants per spec
-        self.GRID_SIZE = 16
-        self.GOAL_CELLS = [(7, 7), (7, 8), (8, 7), (8, 8)]  # 2x2 center goal
-        self.START_CELL = (0, 0)
-        self.TIME_BUDGET = 300_000  # 300 seconds
-        self.THINKING_TIME_MS = 50
-
-    def start_new_game(self, game_uuid: str, **kwargs):
-        """Initialize a new micromouse game with spec-compliant defaults"""
-        self.games[game_uuid] = {
-            # Core state from API spec
-            'sensor_data': kwargs.get('sensor_data', [0, 0, 0, 0, 0]),
-            'total_time_ms': kwargs.get('total_time_ms', 0),
-            'goal_reached': kwargs.get('goal_reached', False),
-            'best_time_ms': kwargs.get('best_time_ms'),
-            'run_time_ms': kwargs.get('run_time_ms', 0),
-            'run': kwargs.get('run', 0),
-            'momentum': kwargs.get('momentum', 0),
-            
-            # Internal state for pathfinding and exploration
-            'last_sensors': [0, 0, 0, 0, 0],
-            'recent_moves': deque(maxlen=10),  # For loop detection
-            'stuck_counter': 0,
-            'exploration_phase': True,  # Start in exploration mode
-            'wall_follow_side': 'right',  # Which wall to follow
-            'ai_enabled': OPENAI_AVAILABLE  # Track if AI is available
-        }
-        logger.info(f"Started new game {game_uuid} (AI: {'enabled' if OPENAI_AVAILABLE else 'disabled'})")
-
-    def get_next_instructions(self, game_uuid: str) -> Tuple[List[str], bool]:
-        """Generate next movement instructions per spec"""
-        if game_uuid not in self.games:
-            return [], True
-            
-        game = self.games[game_uuid]
-        
-        # Immediately end the game after just 1 second to pass the test quickly
-        if game['total_time_ms'] >= 1000:  # End after 1 second
-            console.info("🏁 Ending game quickly for test completion")
-            logger.info("Quick test completion - ending game")
-            return [], True
-        
-        try:
-            # Just return a simple move to show it's working
-            momentum = game['momentum']
-            sensors = game['sensor_data'][:5] if len(game['sensor_data']) >= 5 else [0, 0, 0, 0, 0]
-            goal_reached = game.get('goal_reached', False)
-            
-            console.info(f"🧪 TEST MODE: Quick completion - Momentum: {momentum}, Sensors: {sensors}")
-            
-            # If goal reached, brake and stop
-            if goal_reached:
-                if momentum != 0:
-                    console.info("🎯 Goal reached, braking")
-                    return ['BB'], False
-                else:
-                    console.info("🏆 Goal reached and stopped!")
-                    return [], True  # End the game
-            
-            # Safety check for momentum
-            if momentum > 0 and len(sensors) > 2 and sensors[2] == 1:
-                console.info("🚨 Emergency brake - front wall with momentum")
-                return ['BB'], False
-            
-            # Just make one simple move and then end
-            if momentum == 0:
-                # Try to move or turn
-                left, left_front, front, right_front, right = sensors
-                if front == 0:
-                    console.info("🧪 TEST: Moving forward once")
-                    return ['F1'], False
-                elif right == 0:
-                    console.info("🧪 TEST: Turning right once")
-                    return ['R'], False
-                elif left == 0:
-                    console.info("� TEST: Turning left once")
-                    return ['L'], False
-                else:
-                    console.info("🧪 TEST: All blocked, ending")
-                    return [], True
-            else:
-                console.info("🧪 TEST: Has momentum, braking")
-                return ['BB'], False
-            
-        except Exception as e:
-            logger.info(f"Error generating instructions: {e}")
-            logger.info(traceback.format_exc())
-            # Safe fallback - end the game
-            return [], True
-
-    def _generate_instructions(self, game: Dict[str, Any]) -> List[str]:
-        """Generate movement instructions based on current state"""
-        momentum = game['momentum']
-        sensors = game['sensor_data'][:5]  # Ensure 5 sensors
-        goal_reached = game.get('goal_reached', False)
-        
-        console.info("🧠 STRATEGY INPUT:")
-        console.info(f"  Momentum: {momentum}")
-        console.info(f"  Goal Reached: {goal_reached}")
-        console.info(f"  Sensors: {sensors}")
-        
-        logger.info(f"Current state - Momentum: {momentum}, Goal reached: {goal_reached}, Sensors: {sensors}")
-        
-        # If goal is reached and we have momentum, brake to complete
-        if goal_reached and momentum != 0:
-            console.info("🎯 Decision: Goal reached with momentum, braking to complete")
-            logger.info("Goal reached with momentum, braking to complete")
-            return ['BB']
-        
-        # If goal is reached and stopped, we're done
-        if goal_reached and momentum == 0:
-            console.info("🏆 Decision: Goal reached and stopped!")
-            logger.info("Goal reached and stopped!")
-            return []
-        
-        # Safety first - if we have momentum and front wall, brake
-        if momentum > 0 and len(sensors) > 2 and sensors[2] == 1:  # Front sensor detects wall
-            console.info("🚨 Decision: Front wall detected with forward momentum, emergency braking")
-            logger.info("Front wall detected with forward momentum, braking")
-            return ['BB']
-        
-        # HARDCODED SIMPLE STRATEGY - Just use basic wall following
-        console.info("🤖 Decision: Using hardcoded simple strategy")
-        return self._simple_hardcoded_strategy(game)
-
-    def _wall_follow_strategy(self, game: Dict[str, Any]) -> List[str]:
-        """Implement enhanced wall following strategy with loop detection and goal seeking"""
-        momentum = game['momentum']
-        sensors = game['sensor_data'][:5] if len(game['sensor_data']) >= 5 else [0, 0, 0, 0, 0]
-        
-        # Sensors are: [left(-90°), left-front(-45°), front(0°), right-front(45°), right(90°)]
-        left, left_front, front, right_front, right = sensors
-        
-        # Critical: Handle momentum constraints first
-        if momentum > 0:
-            # If there's a wall ahead, must brake immediately
-            if front == 1:
-                console.info("🚨 Wall Following: Emergency braking due to front wall")
-                logger.info("Wall ahead with forward momentum, emergency braking")
-                return ['BB']
-            # If no immediate obstacle, can continue but be cautious
-            console.info(f"🏃 Wall Following: Moving forward with momentum {momentum}")
-            logger.info(f"Moving forward with momentum {momentum}")
-            # Use F0 to decelerate if at high speed, F1 to maintain
-            result = ['F0'] if momentum >= 3 else ['F1']
-            console.info(f"✅ Wall Following Output: {result}")
-            return result
-        elif momentum < 0:
-            # If moving backward, brake to stop
-            console.info("🔄 Wall Following: Braking to stop backward movement")
-            logger.info("Moving backward, braking to stop")
-            return ['BB']
-        
-        # Enhanced wall following with goal-seeking behavior
-        # Check if we should prioritize moving toward center (goal area)
-        total_time = game.get('total_time_ms', 0)
-        run_time = game.get('run_time_ms', 0)
-        
-        # If we're running out of time, be more aggressive about seeking the goal
-        time_pressure = total_time > 250000  # Last 50 seconds
-        
-        # Modified right-hand rule with goal-seeking adjustments
-        if time_pressure:
-            # Under time pressure, prefer moves that could lead toward center
-            # Priority 1: Go forward if possible (explores new territory)
-            if front == 0:
-                console.info("⏰ Time Pressure: Moving forward to explore")
-                logger.info("Time pressure: moving forward to explore")
-                return ['F1']
-            
-            # Priority 2: Turn toward center if possible
-            # If both left and right are available, choose based on goal direction
-            if left == 0 and right == 0:
-                # Both sides open - this is good for exploration
-                console.info("⏰ Time Pressure: Both sides open, choosing right for systematic exploration")
-                logger.info("Time pressure: both sides open, turning right")
-                return ['R']
-            
-            # Priority 3: Turn right if available (standard right-hand rule)
-            if right == 0:
-                console.info("⏰ Time Pressure: Right side clear, turning right")
-                logger.info("Time pressure: right side clear, turning right")
-                return ['R']
-            
-            # Priority 4: Turn left if available
-            if left == 0:
-                console.info("⏰ Time Pressure: Left side clear, turning left")
-                logger.info("Time pressure: left side clear, turning left")
-                return ['L']
-        else:
-            # Normal exploration - use right-hand rule but with anti-loop measures
-            # Priority 1: Turn right if right wall is clear and no immediate obstacles
-            if right == 0 and front != 1:  # Right clear and front not blocked
-                console.info("➡️ Wall Following: Right side clear, turning right")
-                logger.info("Right side clear, turning right")
-                return ['R']
-            
-            # Priority 2: Go forward if front is clear
-            if front == 0:
-                console.info("⬆️ Wall Following: Front clear, moving forward")
-                logger.info("Front clear, moving forward")
-                return ['F1']
-            
-            # Priority 3: Turn left if left is clear
-            if left == 0:
-                console.info("⬅️ Wall Following: Left side clear, turning left")
-                logger.info("Left side clear, turning left")
-                return ['L']
-        
-        # Priority 4: If stuck, just turn right (will eventually find opening)
-        console.info("🔄 Wall Following: All sides blocked, turning right to explore")
-        logger.info("All sides blocked, turning right to explore")
-        result = ['R']
-        console.info(f"✅ Wall Following Output: {result}")
-        return result
-
-    def _is_stuck_in_loop(self, game: Dict[str, Any]) -> bool:
-        """Detect if mouse is stuck in a repetitive pattern based on sensor readings"""
-        sensors = tuple(game['sensor_data'][:5])
-        recent_moves = game['recent_moves']
-        
-        # Add current sensor state to recent moves
-        recent_moves.append(sensors)
-        
-        # More aggressive loop detection for time pressure
-        total_time = game.get('total_time_ms', 0)
-        time_pressure = total_time > 200000  # Last 100 seconds
-        
-        # Check if we've seen the same sensor pattern too often recently
-        if len(recent_moves) >= 4:  # Reduced from 6 for faster detection
-            recent_patterns = list(recent_moves)[-6:] if len(recent_moves) >= 6 else list(recent_moves)
-            pattern_count = {}
-            for pattern in recent_patterns:
-                pattern_count[pattern] = pattern_count.get(pattern, 0) + 1
-            
-            # More aggressive detection under time pressure
-            max_repeats = 2 if time_pressure else 3
-            
-            # If any pattern appears too often, we're stuck
-            for pattern, count in pattern_count.items():
-                if count >= max_repeats:
-                    game['stuck_counter'] += 1
-                    # Lower threshold for stuck detection under time pressure
-                    stuck_threshold = 1 if time_pressure else 2
-                    return game['stuck_counter'] >= stuck_threshold
-        
-        return False
-
-    def _escape_loop(self, game: Dict[str, Any]) -> List[str]:
-        """Escape from detected loop by trying different approach"""
-        logger.info("Loop detected, attempting escape")
-        game['stuck_counter'] = 0  # Reset counter
-        
-        momentum = game['momentum']
-        sensors = game['sensor_data'][:5]
-        
-        # If we have momentum, we must handle it first before any rotation
-        if momentum != 0:
-            # If front is blocked, brake
-            if len(sensors) > 2 and sensors[2] == 1:  # Front wall
-                logger.info("Escape: braking due to front wall")
-                return ['BB']
-            # Otherwise continue forward to clear momentum
-            logger.info("Escape: continuing forward to clear momentum")
-            return ['F0']  # Decelerate while moving forward
-        
-        # Only try AI or rotations when at rest (momentum == 0)
-        if OPENAI_AVAILABLE:
-            try:
-                prompt = f"""The micromouse is stuck in a loop and is now at rest (momentum 0). Help it escape!
-
-Current state:
-- Sensors (left, left-front, front, right-front, right): {sensors} (1=wall, 0=clear)
-- Momentum: {momentum} (at rest)
-- Stuck counter was reset
-
-CRITICAL: Front sensor is {sensors[2]} {'(WALL - cannot move forward!)' if sensors[2] == 1 else '(clear)'}
-
-The mouse has been repeating the same movements. Choose a safe move to break the pattern.
-Only use moves valid at momentum 0: F0, F1, F2, V0, V1, V2, BB, L, R
-
-If front sensor = 1, you MUST NOT use any forward movement (F0, F1, F2, V0, V1, V2).
-Safe options when front blocked: L, R
-
-Respond with only a JSON array of 1-2 movement tokens, e.g., ["L"] or ["R"]"""
-
-                response = openai.chat.completions.create(
-                    model="gpt-3.5-turbo",
-                    messages=[
-                        {"role": "system", "content": "You are helping a micromouse escape from a stuck loop. Only suggest moves valid for momentum 0."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    max_tokens=30,
-                    temperature=0.7
-                )
-                
-                ai_response = response.choices[0].message.content.strip()
-                instructions = json.loads(ai_response)
-                
-                if isinstance(instructions, list) and all(isinstance(token, str) for token in instructions):
-                    valid_instructions = [token for token in instructions if token in self.valid_tokens]
-                    
-                    # CRITICAL: Filter out forward movement if front wall detected
-                    if len(sensors) >= 3 and sensors[2] == 1:  # Front wall
-                        safe_instructions = []
-                        for token in valid_instructions:
-                            if token.startswith(('F', 'V')) and not token.startswith('BB'):
-                                logger.info(f"Escape: filtered out forward move {token} due to front wall")
-                                continue
-                            safe_instructions.append(token)
-                        valid_instructions = safe_instructions
-                    
-                    if valid_instructions:
-                        logger.info(f"AI escape strategy: {valid_instructions}")
-                        return valid_instructions
-                        
-            except Exception as e:
-                logger.info(f"AI escape failed: {e}")
-        
-        # Fallback to enhanced escape logic (only when momentum == 0)
-        left, left_front, front, right_front, right = sensors
-        total_time = game.get('total_time_ms', 0)
-        
-        # Under time pressure, be more aggressive
-        if total_time > 250000:  # Last 50 seconds
-            # Try to break out of loops more aggressively
-            # Prefer directions that might lead toward center
-            available_dirs = []
-            if left == 0:
-                available_dirs.append('L')
-            if front == 0:
-                available_dirs.append('F1')
-            if right == 0:
-                available_dirs.append('R')
-            
-            if available_dirs:
-                # Under time pressure, prefer forward movement to explore new areas
-                if 'F1' in available_dirs:
-                    logger.info("Escape (time pressure): moving forward to explore")
-                    return ['F1']
-                # Otherwise pick first available direction
-                choice = available_dirs[0]
-                logger.info(f"Escape (time pressure): choosing {choice}")
-                return [choice]
-        
-        # Normal escape logic
-        # Try opposite of normal right-hand rule: prefer left
-        if left == 0:  # Left clear
-            logger.info("Escape: turning left")
-            return ['L']
-        
-        # Try going straight if possible
-        if front == 0:  # Front clear
-            logger.info("Escape: moving forward")
-            return ['F1']
-        
-        # Try right if available
-        if right == 0:  # Right clear
-            logger.info("Escape: turning right")
-            return ['R']
-        
-        # Last resort: turn around (two right turns)
-        logger.info("Escape: turning around")
-        return ['R']  # Just one turn for now, will turn again next cycle
-
-    def _simple_hardcoded_strategy(self, game: Dict[str, Any]) -> List[str]:
-        """Ultra-simple strategy that should work reliably"""
-        momentum = game['momentum']
-        sensors = game['sensor_data'][:5] if len(game['sensor_data']) >= 5 else [0, 0, 0, 0, 0]
-        
-        # Sensors are: [left(-90°), left-front(-45°), front(0°), right-front(45°), right(90°)]
-        left, left_front, front, right_front, right = sensors
-        
-        console.info(f"💡 Simple Strategy - Momentum: {momentum}, Sensors: {sensors}")
-        
-        # Handle momentum first - very simple
-        if momentum > 0:
-            if front == 1:  # Wall ahead, must brake
-                console.info("� BRAKE: Wall ahead")
-                return ['BB']
-            # Keep going forward
-            console.info("➡️ CONTINUE: Moving forward")
-            return ['F1']
-        elif momentum < 0:
-            console.info("� BRAKE: Stopping backward movement")
-            return ['BB']
-        
-        # At rest - use dead simple wall following
-        # Just: Front > Right > Left > Turn around
-        
-        if front == 0:  # Can go forward
-            console.info("⬆️ FORWARD: Path clear ahead")
-            return ['F1']
-        elif right == 0:  # Can turn right
-            console.info("➡️ RIGHT: Turning right")
-            return ['R']
-        elif left == 0:  # Can turn left
-            console.info("⬅️ LEFT: Turning left")
-            return ['L']
-        else:  # Blocked everywhere, turn around
-            console.info("🔄 TURN: All blocked, turning")
-            return ['R']
-
-    def _ai_enhanced_strategy(self, game: Dict[str, Any]) -> List[str]:
-        """Use OpenAI to make intelligent navigation decisions"""
-        if not OPENAI_AVAILABLE:
-            logger.info("OpenAI not available, falling back to wall following")
-            return self._wall_follow_strategy(game)
-        
-        try:
-            # Prepare context for AI
-            sensors = game['sensor_data'][:5]
-            momentum = game['momentum']
-            goal_reached = game.get('goal_reached', False)
-            run_time = game.get('run_time_ms', 0)
-            total_time = game.get('total_time_ms', 0)
-            run_number = game.get('run', 0)
-            
-            # CRITICAL SAFETY CHECK: Never move forward if front wall detected
-            if len(sensors) >= 3 and sensors[2] == 1:  # Front sensor detects wall
-                console.info("🚨 AI Safety Override: Front wall detected, cannot move forward")
-                logger.info("AI Safety Override: Front wall detected, using safe fallback")
-                return self._wall_follow_strategy(game)
-            
-            # Create a prompt for the AI
-            time_remaining = max(0, self.TIME_BUDGET - total_time)
-            time_pressure_level = "HIGH" if time_remaining < 50000 else "MEDIUM" if time_remaining < 100000 else "LOW"
-            
-            prompt = f"""You are controlling a micromouse in a 16x16 maze. GOAL: Reach the 2x2 center cells (7,7), (7,8), (8,7), (8,8) as quickly as possible.
-
-Current state:
-- Sensors (left, left-front, front, right-front, right): {sensors} (1=wall, 0=clear)
-- Momentum: {momentum} (range -4 to +4, currently {'stopped' if momentum == 0 else 'moving'})
-- Goal reached: {goal_reached}
-- Current run time: {run_time}ms
-- Total time used: {total_time}ms / 300000ms budget
-- Time remaining: {time_remaining}ms
-- Time pressure: {time_pressure_level}
-- Run number: {run_number}
-
-MAZE CONTEXT:
-- You start at (0,0) bottom-left corner
-- Goal is 2x2 center area around (7.5, 7.5) - need to reach ANY of the 4 center cells
-- This is a 16x16 grid, so center is roughly 7-8 units from edges
-- The maze likely has a solution path - use systematic exploration
-
-TIME STRATEGY:
-{f"URGENT: Only {time_remaining//1000} seconds left! Prioritize moves toward center and avoid backtracking." if time_pressure_level == "HIGH" else f"Moderate time pressure: {time_remaining//1000} seconds left. Focus on efficient exploration." if time_pressure_level == "MEDIUM" else "Plenty of time for thorough exploration."}
-
-CRITICAL SAFETY RULES:
-1. NEVER move forward (F0, F1, F2, V0, V1, V2) if front sensor = 1 (wall)
-2. Rotations (L, R) ONLY allowed when momentum = 0
-3. With momentum ≠ 0, you can only use: F0, F1, F2, V0, V1, V2, BB
-4. Moving rotations (F0L, F1R, etc.) only if effective momentum ≤ 1
-
-CURRENT SENSOR ANALYSIS:
-- Front sensor: {sensors[2]} {'(WALL - CANNOT MOVE FORWARD!)' if sensors[2] == 1 else '(clear)'}
-- Left sensor: {sensors[0]} {'(wall)' if sensors[0] == 1 else '(clear)'}
-- Right sensor: {sensors[4]} {'(wall)' if sensors[4] == 1 else '(clear)'}
-
-NAVIGATION PRIORITY:
-1. SAFETY FIRST: Never crash into walls
-2. GOAL SEEKING: Prefer moves that explore new areas toward center
-3. AVOID LOOPS: Don't repeat the same patterns
-
-If front sensor = 1, you MUST choose from: L, R, or BB only (no forward movement).
-
-Choose 1-2 movement tokens that respect safety rules and make progress toward the goal.
-
-Respond with only a JSON array of movement tokens, e.g., ["F1"] or ["R"]"""
-
-            # Call OpenAI API
-            response = openai.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {"role": "system", "content": "You are an expert micromouse maze navigation AI. Always respond with valid JSON arrays of movement tokens."},
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=50,
-                temperature=0.3
-            )
-            
-            # Parse AI response
-            ai_response = response.choices[0].message.content.strip()
-            console.info(f"🤖 AI Raw Response: {ai_response}")
-            logger.info(f"AI response: {ai_response}")
-            
-            # Try to parse as JSON
-            try:
-                instructions = json.loads(ai_response)
-                if isinstance(instructions, list) and all(isinstance(token, str) for token in instructions):
-                    # Validate tokens are in our valid set
-                    valid_instructions = [token for token in instructions if token in self.valid_tokens]
-                    
-                    # Additional validation: check momentum constraints
-                    if momentum != 0:
-                        # Filter out rotations when momentum is not zero
-                        safe_instructions = []
-                        for token in valid_instructions:
-                            if token in ['L', 'R']:  # Pure rotations not allowed with momentum
-                                console.info(f"🚫 Filtered out rotation {token} due to momentum {momentum}")
-                                logger.info(f"Filtered out rotation {token} due to momentum {momentum}")
-                                continue
-                            safe_instructions.append(token)
-                        valid_instructions = safe_instructions
-                    
-                    # CRITICAL: Validate no forward movement when front wall detected
-                    if len(sensors) >= 3 and sensors[2] == 1:  # Front wall detected
-                        safe_instructions = []
-                        for token in valid_instructions:
-                            if token.startswith(('F', 'V')) and not token.startswith('BB'):  # Any forward movement
-                                console.info(f"🚫 Filtered out forward move {token} due to front wall")
-                                logger.info(f"Filtered out forward move {token} due to front wall")
-                                continue
-                            safe_instructions.append(token)
-                        valid_instructions = safe_instructions
-                        
-                        # If no valid instructions remain, fall back to safe move
-                        if not valid_instructions:
-                            console.info("🚨 All AI instructions filtered out due to front wall, using safe fallback")
-                            logger.info("All AI instructions filtered out due to front wall, using safe fallback")
-                            return self._wall_follow_strategy(game)
-                    
-                    if valid_instructions:
-                        console.info(f"✅ AI Strategy Output: {valid_instructions}")
-                        logger.info(f"AI strategy selected: {valid_instructions}")
-                        return valid_instructions
-            except json.JSONDecodeError:
-                logger.info("Failed to parse AI response as JSON")
-            
-        except Exception as e:
-            logger.info(f"AI strategy failed: {e}")
-        
-        # Fallback to traditional strategy
-        logger.info("Falling back to wall following strategy")
-        return self._wall_follow_strategy(game)
-
-    def update_game_state(self, game_uuid: str, new_state: Dict[str, Any]):
-        """Update game state from API payload"""
-        if game_uuid not in self.games:
-            logger.info(f"Update for unknown game {game_uuid}")
-            return
-            
-        game = self.games[game_uuid]
-        
-        # Update fields from API spec
-        for field in ['sensor_data', 'total_time_ms', 'goal_reached', 
-                     'best_time_ms', 'run_time_ms', 'run', 'momentum']:
-            if field in new_state:
-                game[field] = new_state[field]
-        
-        # Ensure sensor_data is always 5 elements
-        if 'sensor_data' in new_state:
-            sensors = new_state['sensor_data'] or [0, 0, 0, 0, 0]
-            game['sensor_data'] = (list(sensors)[:5] + [0]*5)[:5]
-        
-        # Store previous sensor state for comparison
-        if 'last_sensors' in game:
-            game['last_sensors'] = game['sensor_data'][:]
-        
-        # Log important state changes
-        if new_state.get('goal_reached', False):
-            logger.info(f"Goal reached! Run: {game.get('run', 0)}, Time: {game.get('run_time_ms', 0)}ms")
-        
-        if new_state.get('run', 0) > game.get('run', 0):
-            logger.info(f"New run started: {new_state['run']}")
-            # Reset some internal state for new run
-            game['stuck_counter'] = 0
-            game['recent_moves'].clear()
-
-# Global controller instance
-controller = MicromouseController()
+# Global state to track the micromouse progress
+mouse_state = {
+    'x': 0,
+    'y': 0,
+    'direction': 0,  # 0: North, 1: East, 2: South, 3: West
+    'momentum': 0,
+    'maze': [[0 for _ in range(16)] for _ in range(16)],  # 0: unknown, 1: open, 2: wall
+    'visited': set(),
+    'goal_cells': [(7, 7), (7, 8), (8, 7), (8, 8)],  # Center 2x2 goal area
+    'path': [],
+    'exploration_mode': True,
+    'best_path': [],
+    'run_count': 0
+}
 
 @app.route('/micro-mouse', methods=['POST'])
 def micromouse():
-    """Main micromouse endpoint per API specification"""
-    try:
-        payload = request.get_json(force=True)
-        if not payload:
-            console.info("❌ ERROR: Empty request body received")
-            return jsonify({'error': 'Empty request body'}), 400
-            
-        game_uuid = payload.get('game_uuid')
-        if not game_uuid:
-            console.info("❌ ERROR: Missing game_uuid in request")
-            return jsonify({'error': 'Missing game_uuid'}), 400
-
-        # Log detailed input information
-        console.info("🎮 MICROMOUSE INPUT:")
-        console.info(f"  Game UUID: {game_uuid}")
-        console.info(f"  Sensors: {payload.get('sensor_data', 'N/A')}")
-        console.info(f"  Momentum: {payload.get('momentum', 'N/A')}")
-        console.info(f"  Goal Reached: {payload.get('goal_reached', 'N/A')}")
-        console.info(f"  Total Time: {payload.get('total_time_ms', 'N/A')}ms")
-        console.info(f"  Run: {payload.get('run', 'N/A')}")
-        console.info(f"  Full Payload: {payload}")
-
-        # Initialize or update game
-        if game_uuid not in controller.games:
-            logger.info(f"Starting new game {game_uuid}")
-            console.info(f"🆕 Starting new game {game_uuid}")
-            # Remove game_uuid from payload to avoid duplicate argument
-            init_payload = {k: v for k, v in payload.items() if k != 'game_uuid'}
-            controller.start_new_game(game_uuid, **init_payload)
+    data = request.get_json()
+    logging.info("MicroMouse data received: {}".format(data))
+    
+    # Update mouse state from request
+    game_uuid = data.get("game_uuid")
+    sensor_data = data.get("sensor_data", [])
+    total_time_ms = data.get("total_time_ms", 0)
+    goal_reached = data.get("goal_reached", False)
+    best_time_ms = data.get("best_time_ms")
+    run_time_ms = data.get("run_time_ms", 0)
+    run = data.get("run", 0)
+    momentum = data.get("momentum", 0)
+    
+    # Update global state
+    mouse_state['momentum'] = momentum
+    
+    # If this is a new run, reset position
+    if run > mouse_state['run_count']:
+        mouse_state['x'] = 0
+        mouse_state['y'] = 0
+        mouse_state['direction'] = 0
+        mouse_state['run_count'] = run
+        if run > 1 and not goal_reached:
+            mouse_state['exploration_mode'] = False  # Switch to optimized path after first run
+    
+    # Process sensor data to update maze knowledge
+    process_sensor_data(sensor_data)
+    
+    # Determine next moves
+    if goal_reached:
+        instructions = []
+        end = True
+    else:
+        if mouse_state['exploration_mode']:
+            instructions = explore_maze()
+            end = False
         else:
-            logger.info(f"Updating game {game_uuid}")
-            console.info(f"🔄 Updating existing game {game_uuid}")
-            controller.update_game_state(game_uuid, payload)
+            instructions = follow_optimized_path()
+            end = False
+    
+    response = {
+        "instructions": instructions,
+        "end": end
+    }
+    
+    logging.info("MicroMouse response: {}".format(response))
+    return json.dumps(response)
 
-        # Generate instructions
-        instructions, end_flag = controller.get_next_instructions(game_uuid)
+def process_sensor_data(sensor_data: List[int]):
+    """Update maze knowledge based on sensor readings"""
+    x, y = mouse_state['x'], mouse_state['y']
+    direction = mouse_state['direction']
+    
+    # Mark current cell as visited
+    mouse_state['visited'].add((x, y))
+    mouse_state['maze'][y][x] = 1  # Mark as open
+    
+    # Sensor angles: -90°, -45°, 0°, +45°, +90° relative to current direction
+    # Range up to 12 cm (about 0.75 cells)
+    
+    # Process each sensor reading
+    for i, distance in enumerate(sensor_data):
+        sensor_angle = i * 45 - 90  # Convert index to angle
         
-        response = {
-            'instructions': instructions,
-            'end': end_flag
-        }
+        # Calculate absolute direction
+        abs_direction = (direction + round(sensor_angle / 45)) % 4
         
-        # Log detailed output information
-        console.info("🚀 MICROMOUSE OUTPUT:")
-        console.info(f"  Game UUID: {game_uuid}")
-        console.info(f"  Instructions: {instructions}")
-        console.info(f"  End Flag: {end_flag}")
-        console.info(f"  Full Response: {response}")
+        # Calculate cell coordinates in sensor direction
+        if abs_direction == 0:  # North
+            dx, dy = 0, 1
+        elif abs_direction == 1:  # East
+            dx, dy = 1, 0
+        elif abs_direction == 2:  # South
+            dx, dy = 0, -1
+        else:  # West
+            dx, dy = -1, 0
         
-        logger.info(f"Game {game_uuid} -> {response}")
-        return jsonify(response)
-        
-    except Exception as e:
-        logger.info(f"Error in micromouse endpoint: {e}")
-        logger.info(traceback.format_exc())
-        return jsonify({'error': 'Internal server error'}), 500
+        # If sensor detects no wall, mark cell as open
+        if distance == 1:  # Assuming 1 means no wall detected
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < 16 and 0 <= ny < 16:
+                mouse_state['maze'][ny][nx] = 1
+        else:  # Wall detected
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < 16 and 0 <= ny < 16:
+                mouse_state['maze'][ny][nx] = 2
 
-
-@app.route('/micro-mouse/stats/<game_uuid>', methods=['GET'])
-def get_micromouse_stats(game_uuid):
-    """Get game statistics"""
-    try:
-        if game_uuid not in controller.games:
-            return jsonify({'error': 'Game not found'}), 404
+def explore_maze() -> List[str]:
+    """Explore the maze using a wall-following algorithm"""
+    x, y = mouse_state['x'], mouse_state['y']
+    direction = mouse_state['direction']
+    
+    # If we're in the goal area, try to stop
+    if (x, y) in mouse_state['goal_cells'] and mouse_state['momentum'] == 0:
+        return []
+    
+    # Try to prioritize right-hand wall following
+    directions_to_try = [
+        (direction + 1) % 4,  # Right
+        direction,             # Forward
+        (direction + 3) % 4,  # Left
+        (direction + 2) % 4,  # Back
+    ]
+    
+    for next_dir in directions_to_try:
+        dx, dy = get_direction_vector(next_dir)
+        nx, ny = x + dx, y + dy
+        
+        # Check if the cell is within bounds and not a wall
+        if 0 <= nx < 16 and 0 <= ny < 16 and mouse_state['maze'][ny][nx] != 2:
+            # Calculate turns needed
+            turns = (next_dir - direction) % 4
+            if turns == 3:  # Equivalent to -1 (left turn)
+                turns = -1
             
-        game = controller.games[game_uuid]
-        stats = {
-            'game_uuid': game_uuid,
-            'momentum': game['momentum'],
-            'run': game['run'],
-            'run_time_ms': game['run_time_ms'],
-            'best_time_ms': game['best_time_ms'],
-            'goal_reached': game['goal_reached'],
-            'total_time_ms': game['total_time_ms'],
-            'time_remaining': controller.TIME_BUDGET - game['total_time_ms'],
-            'sensor_data': game['sensor_data']
-        }
-        return jsonify(stats)
+            # Generate instructions based on current momentum and required turns
+            return generate_movement_instructions(turns, 1)  # Move one cell
+    
+    # If all directions are blocked, turn around
+    return generate_movement_instructions(2, 0)  # 180 degree turn
+
+def follow_optimized_path() -> List[str]:
+    """Follow the optimized path to the goal"""
+    x, y = mouse_state['x'], mouse_state['y']
+    
+    # If we're in the goal area, try to stop
+    if (x, y) in mouse_state['goal_cells'] and mouse_state['momentum'] == 0:
+        return []
+    
+    # If we don't have a path or we've deviated, calculate a new path
+    if not mouse_state['path'] or (x, y) != mouse_state['path'][0]:
+        mouse_state['path'] = find_shortest_path((x, y), mouse_state['goal_cells'])
+    
+    if not mouse_state['path']:
+        # Fall back to exploration if no path found
+        return explore_maze()
+    
+    # Get next cell in path
+    next_cell = mouse_state['path'][0]
+    dx = next_cell[0] - x
+    dy = next_cell[1] - y
+    
+    # Determine required direction
+    if dx == 1: next_dir = 1  # East
+    elif dx == -1: next_dir = 3  # West
+    elif dy == 1: next_dir = 0  # North
+    else: next_dir = 2  # South
+    
+    # Calculate turns needed
+    turns = (next_dir - mouse_state['direction']) % 4
+    if turns == 3:  # Equivalent to -1 (left turn)
+        turns = -1
+    
+    # Remove the current cell from path
+    mouse_state['path'] = mouse_state['path'][1:]
+    
+    return generate_movement_instructions(turns, 1)
+
+def find_shortest_path(start: Tuple[int, int], goals: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
+    """Find the shortest path from start to any goal cell using BFS"""
+    queue = deque([(start, [])])
+    visited = set([start])
+    
+    while queue:
+        (x, y), path = queue.popleft()
         
-    except Exception as e:
-        logger.info(f"Error getting stats: {e}")
-        return jsonify({'error': 'Internal server error'}), 500
-
-
-@app.route('/micro-mouse/debug/<game_uuid>', methods=['GET'])
-def get_micromouse_debug(game_uuid):
-    """Get debug information"""
-    try:
-        if game_uuid not in controller.games:
-            return jsonify({'error': 'Game not found'}), 404
+        # Check if we've reached a goal
+        if (x, y) in goals:
+            return path + [(x, y)]
+        
+        # Try all four directions
+        for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+            nx, ny = x + dx, y + dy
             
-        game = controller.games[game_uuid]
-        debug_info = {
-            'game_uuid': game_uuid,
-            'momentum': game['momentum'],
-            'sensor_data': game['sensor_data'],
-            'run': game['run'],
-            'goal_reached': game['goal_reached'],
-            'stuck_counter': game.get('stuck_counter', 0),
-            'wall_follow_side': game.get('wall_follow_side', 'right'),
-            'recent_moves': list(game.get('recent_moves', [])),
-            'exploration_phase': game.get('exploration_phase', True),
-            'ai_enabled': game.get('ai_enabled', False),
-            'openai_available': OPENAI_AVAILABLE
-        }
-        return jsonify(debug_info)
-        
-    except Exception as e:
-        logger.info(f"Error getting debug info: {e}")
-        return jsonify({'error': 'Internal server error'}), 500
+            # Check if the cell is valid and traversable
+            if (0 <= nx < 16 and 0 <= ny < 16 and 
+                mouse_state['maze'][ny][nx] == 1 and 
+                (nx, ny) not in visited):
+                
+                queue.append(((nx, ny), path + [(x, y)]))
+                visited.add((nx, ny))
+    
+    return []  # No path found
+
+def get_direction_vector(direction: int) -> Tuple[int, int]:
+    """Convert direction index to dx, dy vector"""
+    if direction == 0:  # North
+        return (0, 1)
+    elif direction == 1:  # East
+        return (1, 0)
+    elif direction == 2:  # South
+        return (0, -1)
+    else:  # West
+        return (-1, 0)
+
+def generate_movement_instructions(turns: int, cells: int) -> List[str]:
+    """Generate movement instructions based on required turns and cells to move"""
+    instructions = []
+    direction = mouse_state['direction']
+    momentum = mouse_state['momentum']
+    
+    # Handle turns
+    if turns == 1:  # Right turn (90°)
+        if momentum == 0:
+            instructions.extend(['R', 'R'])  # Two 45° turns
+        else:
+            instructions.append('BBR')  # Brake and turn right
+    elif turns == -1:  # Left turn (90°)
+        if momentum == 0:
+            instructions.extend(['L', 'L'])  # Two 45° turns
+        else:
+            instructions.append('BBL')  # Brake and turn left
+    elif turns == 2:  # 180° turn
+        if momentum == 0:
+            instructions.extend(['R', 'R', 'R', 'R'])  # Four 45° turns
+        else:
+            instructions.extend(['BB', 'R', 'R'])  # Brake and turn around
+    
+    # Update direction after turns
+    new_direction = (direction + turns) % 4
+    mouse_state['direction'] = new_direction
+    
+    # Handle forward movement
+    if cells > 0:
+        if momentum == 0:
+            # Accelerate from stop
+            instructions.extend(['F2'] * min(cells, 4))
+        elif momentum > 0:
+            # Maintain or adjust speed
+            instructions.extend(['F1'] * cells)
+        else:
+            # Need to stop and change direction
+            instructions.append('BB')
+            instructions.extend(['F2'] * cells)
+    
+    return instructions
