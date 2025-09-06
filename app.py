@@ -2,11 +2,13 @@ import logging
 import socket
 
 from routes import app
+import routes.square
+import routes.ticketing_agent
 
 logger = logging.getLogger(__name__)
 
 
-@app.route('/', methods=['GET'])
+@app.route('/', methods=['GET', 'POST'])
 def default_route():
     return 'Python Template'
 
