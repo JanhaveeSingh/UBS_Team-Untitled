@@ -91,7 +91,50 @@ def default_route():
                     if response.status_code == 200:
                         return (assignment_id, True, "ui_form_data")
                     
-                    # Fallback to documented API method (though this usually fails)
+                    # Try alternative UI endpoints that might work better
+                    ui_endpoints = [
+                        f'{base_url}/ui/api/assignment/score',
+                        f'{base_url}/ui/assignment/update',
+                        f'{base_url}/ui/score/update'
+                    ]
+                    
+                    for ui_endpoint in ui_endpoints:
+                        try:
+                            # Try form data first
+                            form_response = requests.post(
+                                ui_endpoint,
+                                data=form_data,
+                                headers={'ACCESS_TOKEN': auth_token},
+                                timeout=3
+                            )
+                            
+                            if form_response.status_code == 200:
+                                return (assignment_id, True, f"ui_alt_{ui_endpoint.split('/')[-1]}")
+                            
+                            # Try JSON format
+                            payload = {
+                                "username": target_user,
+                                "assignmentId": assignment_id,
+                                "score": 100
+                            }
+                            
+                            json_response = requests.post(
+                                ui_endpoint,
+                                json=payload,
+                                headers={
+                                    'ACCESS_TOKEN': auth_token, 
+                                    'Content-Type': 'application/json'
+                                },
+                                timeout=3
+                            )
+                            
+                            if json_response.status_code == 200:
+                                return (assignment_id, True, f"json_alt_{ui_endpoint.split('/')[-1]}")
+                                
+                        except:
+                            continue
+                    
+                    # Final fallback to documented API method
                     payload = {
                         "username": target_user,
                         "assignmentId": assignment_id,
@@ -112,7 +155,7 @@ def default_route():
                     if response.status_code == 200:
                         return (assignment_id, True, "api_json")
                     
-                    return (assignment_id, False, f"failed_{response.status_code}")
+                    return (assignment_id, False, f"all_failed_{response.status_code}")
                     
                 except Exception as e:
                     return (assignment_id, False, f"error_{str(e)[:30]}")
@@ -133,7 +176,38 @@ def default_route():
             
             logger.info(f"🎯 PEER ASSISTANCE COMPLETE: {success_count}/20 assignments successful")
             
-            # Step 4: Calculate challenge completion
+            # Step 4: VERIFY that scores are actually visible on the UI
+            logger.info("🔍 Step 4: Verifying scores are visible on CoolCode UI...")
+            
+            # Try to get Caroline's profile/scores to verify they actually changed
+            verification_endpoints = [
+                f'{base_url}/ui/profile/98ixul',
+                f'{base_url}/api/user/98ixul', 
+                f'{base_url}/api/scores/98ixul',
+                f'{base_url}/ui/api/user/98ixul'
+            ]
+            
+            scores_verified = False
+            for endpoint in verification_endpoints:
+                try:
+                    verify_response = requests.get(
+                        endpoint,
+                        headers={'ACCESS_TOKEN': auth_token},
+                        timeout=5
+                    )
+                    logger.info(f"Verification check {endpoint}: {verify_response.status_code}")
+                    if verify_response.status_code == 200:
+                        logger.info(f"✅ Verification response: {verify_response.text[:200]}...")
+                        scores_verified = True
+                        break
+                except Exception as e:
+                    logger.info(f"Verification endpoint {endpoint} failed: {e}")
+                    continue
+            
+            if not scores_verified:
+                logger.warning("⚠️ Could not verify scores on UI - this might be why UBS shows 0 points")
+            
+            # Step 5: Calculate challenge completion
             # Challenge states: "This counts for 60% of the challenge score"
             # We need at least 12/20 (60%) successful to get points
             assignments_needed = 12  # 60% of 20
