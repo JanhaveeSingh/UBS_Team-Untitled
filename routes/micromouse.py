@@ -125,8 +125,13 @@ class MicromouseController:
         game = self.games[game_uuid]
         
         # Check end conditions per spec
-        if (game['total_time_ms'] >= self.TIME_BUDGET or 
-            game['run'] >= 10):  # Reasonable run limit
+        if game['total_time_ms'] >= self.TIME_BUDGET:
+            logger.info("Time budget exhausted, ending game")
+            return [], True
+        
+        # Allow more runs for better maze completion chances
+        if game['run'] >= 15:  # Increased from 10 to allow more attempts
+            logger.info("Maximum runs reached, ending game")
             return [], True
         
         try:
@@ -197,7 +202,7 @@ class MicromouseController:
             return self._escape_loop(game)
         
         # Use AI-enhanced strategy if available, otherwise fall back to wall following
-        if OPENAI_AVAILABLE and game.get('total_time_ms', 0) < 250000:  # Use AI for first 250 seconds
+        if OPENAI_AVAILABLE and game.get('total_time_ms', 0) < 280000:  # Use AI for first 280 seconds (extended)
             console.info("🤖 Decision: Using AI-enhanced strategy")
             return self._ai_enhanced_strategy(game)
         else:
@@ -205,7 +210,7 @@ class MicromouseController:
             return self._wall_follow_strategy(game)
 
     def _wall_follow_strategy(self, game: Dict[str, Any]) -> List[str]:
-        """Implement right-hand wall following strategy using only sensor data"""
+        """Implement enhanced wall following strategy with loop detection and goal seeking"""
         momentum = game['momentum']
         sensors = game['sensor_data'][:5] if len(game['sensor_data']) >= 5 else [0, 0, 0, 0, 0]
         
@@ -232,24 +237,61 @@ class MicromouseController:
             logger.info("Moving backward, braking to stop")
             return ['BB']
         
-        # At rest (momentum == 0), apply right-hand rule safely
-        # Priority 1: Turn right if right wall is clear and no immediate obstacles
-        if right == 0 and front != 1:  # Right clear and front not blocked
-            console.info("➡️ Wall Following: Right side clear, turning right")
-            logger.info("Right side clear, turning right")
-            return ['R']
+        # Enhanced wall following with goal-seeking behavior
+        # Check if we should prioritize moving toward center (goal area)
+        total_time = game.get('total_time_ms', 0)
+        run_time = game.get('run_time_ms', 0)
         
-        # Priority 2: Go forward if front is clear
-        if front == 0:
-            console.info("⬆️ Wall Following: Front clear, moving forward")
-            logger.info("Front clear, moving forward")
-            return ['F1']
+        # If we're running out of time, be more aggressive about seeking the goal
+        time_pressure = total_time > 250000  # Last 50 seconds
         
-        # Priority 3: Turn left if left is clear
-        if left == 0:
-            console.info("⬅️ Wall Following: Left side clear, turning left")
-            logger.info("Left side clear, turning left")
-            return ['L']
+        # Modified right-hand rule with goal-seeking adjustments
+        if time_pressure:
+            # Under time pressure, prefer moves that could lead toward center
+            # Priority 1: Go forward if possible (explores new territory)
+            if front == 0:
+                console.info("⏰ Time Pressure: Moving forward to explore")
+                logger.info("Time pressure: moving forward to explore")
+                return ['F1']
+            
+            # Priority 2: Turn toward center if possible
+            # If both left and right are available, choose based on goal direction
+            if left == 0 and right == 0:
+                # Both sides open - this is good for exploration
+                console.info("⏰ Time Pressure: Both sides open, choosing right for systematic exploration")
+                logger.info("Time pressure: both sides open, turning right")
+                return ['R']
+            
+            # Priority 3: Turn right if available (standard right-hand rule)
+            if right == 0:
+                console.info("⏰ Time Pressure: Right side clear, turning right")
+                logger.info("Time pressure: right side clear, turning right")
+                return ['R']
+            
+            # Priority 4: Turn left if available
+            if left == 0:
+                console.info("⏰ Time Pressure: Left side clear, turning left")
+                logger.info("Time pressure: left side clear, turning left")
+                return ['L']
+        else:
+            # Normal exploration - use right-hand rule but with anti-loop measures
+            # Priority 1: Turn right if right wall is clear and no immediate obstacles
+            if right == 0 and front != 1:  # Right clear and front not blocked
+                console.info("➡️ Wall Following: Right side clear, turning right")
+                logger.info("Right side clear, turning right")
+                return ['R']
+            
+            # Priority 2: Go forward if front is clear
+            if front == 0:
+                console.info("⬆️ Wall Following: Front clear, moving forward")
+                logger.info("Front clear, moving forward")
+                return ['F1']
+            
+            # Priority 3: Turn left if left is clear
+            if left == 0:
+                console.info("⬅️ Wall Following: Left side clear, turning left")
+                logger.info("Left side clear, turning left")
+                return ['L']
         
         # Priority 4: If stuck, just turn right (will eventually find opening)
         console.info("🔄 Wall Following: All sides blocked, turning right to explore")
@@ -266,18 +308,27 @@ class MicromouseController:
         # Add current sensor state to recent moves
         recent_moves.append(sensors)
         
+        # More aggressive loop detection for time pressure
+        total_time = game.get('total_time_ms', 0)
+        time_pressure = total_time > 200000  # Last 100 seconds
+        
         # Check if we've seen the same sensor pattern too often recently
-        if len(recent_moves) >= 6:
-            recent_patterns = list(recent_moves)[-6:]
+        if len(recent_moves) >= 4:  # Reduced from 6 for faster detection
+            recent_patterns = list(recent_moves)[-6:] if len(recent_moves) >= 6 else list(recent_moves)
             pattern_count = {}
             for pattern in recent_patterns:
                 pattern_count[pattern] = pattern_count.get(pattern, 0) + 1
             
-            # If any pattern appears more than 3 times in recent moves, we're stuck
-            for count in pattern_count.values():
-                if count >= 4:
+            # More aggressive detection under time pressure
+            max_repeats = 2 if time_pressure else 3
+            
+            # If any pattern appears too often, we're stuck
+            for pattern, count in pattern_count.items():
+                if count >= max_repeats:
                     game['stuck_counter'] += 1
-                    return game['stuck_counter'] >= 2
+                    # Lower threshold for stuck detection under time pressure
+                    stuck_threshold = 1 if time_pressure else 2
+                    return game['stuck_counter'] >= stuck_threshold
         
         return False
 
@@ -352,9 +403,33 @@ Respond with only a JSON array of 1-2 movement tokens, e.g., ["L"] or ["R"]"""
             except Exception as e:
                 logger.info(f"AI escape failed: {e}")
         
-        # Fallback to traditional escape logic (only when momentum == 0)
+        # Fallback to enhanced escape logic (only when momentum == 0)
         left, left_front, front, right_front, right = sensors
+        total_time = game.get('total_time_ms', 0)
         
+        # Under time pressure, be more aggressive
+        if total_time > 250000:  # Last 50 seconds
+            # Try to break out of loops more aggressively
+            # Prefer directions that might lead toward center
+            available_dirs = []
+            if left == 0:
+                available_dirs.append('L')
+            if front == 0:
+                available_dirs.append('F1')
+            if right == 0:
+                available_dirs.append('R')
+            
+            if available_dirs:
+                # Under time pressure, prefer forward movement to explore new areas
+                if 'F1' in available_dirs:
+                    logger.info("Escape (time pressure): moving forward to explore")
+                    return ['F1']
+                # Otherwise pick first available direction
+                choice = available_dirs[0]
+                logger.info(f"Escape (time pressure): choosing {choice}")
+                return [choice]
+        
+        # Normal escape logic
         # Try opposite of normal right-hand rule: prefer left
         if left == 0:  # Left clear
             logger.info("Escape: turning left")
@@ -396,7 +471,10 @@ Respond with only a JSON array of 1-2 movement tokens, e.g., ["L"] or ["R"]"""
                 return self._wall_follow_strategy(game)
             
             # Create a prompt for the AI
-            prompt = f"""You are controlling a micromouse in a 16x16 maze. Your goal is to reach the 2x2 center goal as quickly as possible.
+            time_remaining = max(0, self.TIME_BUDGET - total_time)
+            time_pressure_level = "HIGH" if time_remaining < 50000 else "MEDIUM" if time_remaining < 100000 else "LOW"
+            
+            prompt = f"""You are controlling a micromouse in a 16x16 maze. GOAL: Reach the 2x2 center cells (7,7), (7,8), (8,7), (8,8) as quickly as possible.
 
 Current state:
 - Sensors (left, left-front, front, right-front, right): {sensors} (1=wall, 0=clear)
@@ -404,7 +482,18 @@ Current state:
 - Goal reached: {goal_reached}
 - Current run time: {run_time}ms
 - Total time used: {total_time}ms / 300000ms budget
+- Time remaining: {time_remaining}ms
+- Time pressure: {time_pressure_level}
 - Run number: {run_number}
+
+MAZE CONTEXT:
+- You start at (0,0) bottom-left corner
+- Goal is 2x2 center area around (7.5, 7.5) - need to reach ANY of the 4 center cells
+- This is a 16x16 grid, so center is roughly 7-8 units from edges
+- The maze likely has a solution path - use systematic exploration
+
+TIME STRATEGY:
+{f"URGENT: Only {time_remaining//1000} seconds left! Prioritize moves toward center and avoid backtracking." if time_pressure_level == "HIGH" else f"Moderate time pressure: {time_remaining//1000} seconds left. Focus on efficient exploration." if time_pressure_level == "MEDIUM" else "Plenty of time for thorough exploration."}
 
 CRITICAL SAFETY RULES:
 1. NEVER move forward (F0, F1, F2, V0, V1, V2) if front sensor = 1 (wall)
@@ -417,17 +506,16 @@ CURRENT SENSOR ANALYSIS:
 - Left sensor: {sensors[0]} {'(wall)' if sensors[0] == 1 else '(clear)'}
 - Right sensor: {sensors[4]} {'(wall)' if sensors[4] == 1 else '(clear)'}
 
-Available tokens based on current momentum {momentum}:
-{'- ALL tokens available (including L, R)' if momentum == 0 else '- Only longitudinal: F0, F1, F2, V0, V1, V2, BB (NO rotations L/R)'}
+NAVIGATION PRIORITY:
+1. SAFETY FIRST: Never crash into walls
+2. GOAL SEEKING: Prefer moves that explore new areas toward center
+3. AVOID LOOPS: Don't repeat the same patterns
 
 If front sensor = 1, you MUST choose from: L, R, or BB only (no forward movement).
 
-Choose 1-3 movement tokens that respect safety rules. Consider:
-1. SAFETY FIRST: Never crash into walls
-2. MOMENTUM RULES: No L/R unless momentum = 0
-3. Use right-hand rule for exploration when safe
+Choose 1-2 movement tokens that respect safety rules and make progress toward the goal.
 
-Respond with only a JSON array of movement tokens, e.g., ["L"] or ["R"]"""
+Respond with only a JSON array of movement tokens, e.g., ["F1"] or ["R"]"""
 
             # Call OpenAI API
             response = openai.chat.completions.create(
