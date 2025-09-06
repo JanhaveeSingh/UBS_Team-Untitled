@@ -374,7 +374,7 @@ class MicromouseController:
                 # Extract the rotation direction
                 if tok.endswith('R'):
                     # Right turn - check if there's a wall to the right after the turn
-                    if sensors[4]:  # Right sensor detects wall
+                    if sensors[1]:  # Right sensor detects wall
                         logger.warning("Real-time safety: right wall detected; blocking moving rotation %s", tok)
                         return ['BB']
                 elif tok.endswith('L'):
