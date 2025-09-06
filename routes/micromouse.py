@@ -79,7 +79,7 @@ class MicromouseController:
         if position is None:
             position = (0, 0)
         self.games[game_uuid] = {
-            'sensor_data': (sensor_data[:5] + [0]*5)[:5],
+            'sensor_data': (list(sensor_data)[:5] + [0]*5)[:5] if sensor_data else [0, 0, 0, 0, 0],
             'total_time_ms': total_time_ms,
             'goal_reached': goal_reached,
             'best_time_ms': best_time_ms,
@@ -143,6 +143,23 @@ class MicromouseController:
         # update map from sensors
         self._update_maze_map(game, pos, orient, sensors)
 
+        # First check if we're completely blocked by walls
+        # Check if front is blocked and we have momentum (would crash)
+        if sensors[2] == 1 and momentum > 0:
+            logger.warning("Front wall detected with forward momentum, braking to avoid crash")
+            return ['BB']
+        
+        # Check if all main directions are blocked
+        if sensors[0] == 1 and sensors[2] == 1 and sensors[4] == 1:
+            # All three main directions blocked - just brake
+            logger.warning("All main directions blocked, braking to avoid crash")
+            return ['BB']
+
+        # Check if we're in goal area but still moving - need to brake
+        if self._is_in_goal_area(pos) and momentum > 0:
+            logger.info("In goal area with momentum %s, braking to complete goal", momentum)
+            return ['BB']
+        
         # Try to find path to goal
         path = self._find_path_to_goal(game)
         if not path:
@@ -153,7 +170,21 @@ class MicromouseController:
         instrs = self._path_to_legal_instructions(game, path)
         # final safety check against immediate front wall in the same sensor frame
         final_guarded = self._apply_realtime_safety(game, instrs, sensors)
-        return final_guarded[:5]
+        
+        # Additional safety: if we still have moving rotations after safety checks, replace with safe alternatives
+        safe_instructions = []
+        for instr in final_guarded[:5]:
+            if instr in ('F0R', 'F1R', 'F2R', 'F0L', 'F1L', 'F2L'):
+                # Replace moving rotation with brake + in-place turn + forward
+                if instr.endswith('R'):
+                    safe_instructions.extend(['BB', 'R', 'F2'])
+                else:  # ends with 'L'
+                    safe_instructions.extend(['BB', 'L', 'F2'])
+                # Don't break - continue processing remaining instructions
+            else:
+                safe_instructions.append(instr)
+        
+        return safe_instructions[:5]
 
     # Build legal tokens from path respecting momentum/rotation rules
     def _path_to_legal_instructions(self, game: Dict[str, Any], path: List[Tuple[int, int]]) -> List[str]:
@@ -164,6 +195,9 @@ class MicromouseController:
         cur_pos = tuple(game['position'])
         cur_orient = int(game['orientation'])  # degrees: 0,45,90,...
         cur_mom = int(game['momentum'])
+        
+        # Get current sensor data for safety checks
+        sensors = (game['sensor_data'][:5] + [0]*5)[:5]
 
         for next_cell in path:
             # validate cells
@@ -216,7 +250,7 @@ class MicromouseController:
             # choose forward action token to use: if cur_mom >=4 then F1 else F2 to accelerate
             if cur_mom <= 0:
                 planned_token = 'F2'  # from rest or reverse -> accelerate forward (but reverse case handled above)
-                planned_out_m = min(4, cur_mom + 1) if cur_mom >= 0 else 1
+                planned_out_m = 1  # F2 always gives +1 momentum
             else:
                 # have forward momentum
                 planned_token = 'F2' if cur_mom < 4 else 'F1'
@@ -225,9 +259,17 @@ class MicromouseController:
             m_eff = (abs(cur_mom) + abs(planned_out_m)) / 2.0
 
             # handle cases where rot requires a moving rotation:
+            # Be more conservative - only use moving rotation if we're sure it's safe
             if rot in (90, 270):
-                # moving-rotation possible only if m_eff <= 1
-                if m_eff <= 1.0:
+                # Check if there are walls that would block the moving rotation
+                wall_blocking = False
+                if rot == 90 and sensors[4] == 1:  # Right turn but right sensor sees wall
+                    wall_blocking = True
+                elif rot == 270 and sensors[0] == 1:  # Left turn but left sensor sees wall
+                    wall_blocking = True
+                
+                # moving-rotation possible only if m_eff <= 1 AND we have very low momentum AND no walls blocking
+                if m_eff <= 1.0 and cur_mom <= 1 and not wall_blocking:
                     # produce e.g. F1R or F2L depending on planned_token and rotation direction
                     suffix = 'R' if rot == 90 else 'L'
                     moving_token = planned_token + suffix
@@ -272,7 +314,7 @@ class MicromouseController:
             if cur_mom <= 0:
                 # from 0 or reverse (reverse handled earlier) -> accelerate forward
                 instrs.append('F2')
-                cur_mom = min(4, cur_mom + 1) if cur_mom >= 0 else 1
+                cur_mom = 1  # F2 always gives +1 momentum
             else:
                 # moving forward already - keep accelerating or hold
                 if cur_mom < 4:
@@ -316,16 +358,37 @@ class MicromouseController:
             return []
         sensors = (sensors[:5] + [0]*5)[:5]
         out: List[str] = []
+        
+        # Track current orientation for safety checks
+        current_orient = game.get('orientation', 0)
+        current_momentum = game.get('momentum', 0)
+        
         for i, tok in enumerate(instrs):
             # prevent any in-place rotation when momentum !=0 (double-check)
-            if tok in ('L', 'R') and game.get('momentum', 0) != 0:
-                logger.warning("Real-time safety blocked in-place rotation due to nonzero momentum (payload momentum=%s)", game.get('momentum'))
+            if tok in ('L', 'R') and current_momentum != 0:
+                logger.warning("Real-time safety blocked in-place rotation due to nonzero momentum (payload momentum=%s)", current_momentum)
                 return ['BB']
+            
+            # Check for moving rotations that would hit walls
+            if tok in ('F0R', 'F1R', 'F2R', 'F0L', 'F1L', 'F2L'):
+                # Extract the rotation direction
+                if tok.endswith('R'):
+                    # Right turn - check if there's a wall to the right after the turn
+                    if sensors[4]:  # Right sensor detects wall
+                        logger.warning("Real-time safety: right wall detected; blocking moving rotation %s", tok)
+                        return ['BB']
+                elif tok.endswith('L'):
+                    # Left turn - check if there's a wall to the left after the turn
+                    if sensors[0]:  # Left sensor detects wall
+                        logger.warning("Real-time safety: left wall detected; blocking moving rotation %s", tok)
+                        return ['BB']
+            
             # If about to go forward (first forward token), but front sensor sees a wall, block
-            if i == 0 and tok.startswith('F'):
-                if sensors[2]:
+            if i == 0 and tok.startswith('F') and not tok.endswith(('L', 'R')):
+                if sensors[2]:  # Front sensor detects wall
                     logger.warning("Real-time safety: front wall detected; blocking forward token %s", tok)
                     return ['BB']
+            
             # If sequence starts with rotation then forward, and side sensor reports wall, block
             if i == 1 and tok.startswith('F') and len(out) >= 1 and out[0] in ('L', 'R'):
                 turn = out[0]
@@ -335,6 +398,12 @@ class MicromouseController:
                 if turn == 'R' and sensors[4]:
                     logger.warning("Real-time safety: right wall would block forward after right turn -> blocking")
                     return ['BB']
+            
+            # Additional safety: if we have high momentum and front wall, brake immediately
+            if tok.startswith('F') and not tok.endswith(('L', 'R')) and current_momentum > 2 and sensors[2]:
+                logger.warning("Real-time safety: high momentum (%s) with front wall, braking", current_momentum)
+                return ['BB']
+            
             out.append(tok)
             if len(out) >= 5:
                 break
@@ -361,13 +430,18 @@ class MicromouseController:
         if mom != 0:
             # brake first
             return ['BB']
-        # mom == 0
-        if sensors[4] == 0:
+        
+        # mom == 0, now check for safe turns
+        # Check right side first
+        if sensors[4] == 0:  # Right side is clear
             return ['R', 'F2']
-        if sensors[0] == 0:
+        # Check left side
+        if sensors[0] == 0:  # Left side is clear
             return ['L', 'F2']
-        # boxed in: wait / brake (no-op) or attempt U-turn
-        return ['L', 'L', 'F2']
+        
+        # All sides blocked - just brake and wait
+        logger.warning("Exploration: All sides blocked, braking to avoid crash")
+        return ['BB']
 
     # -------------------------------
     # Maze mapping & helpers
@@ -523,8 +597,11 @@ class MicromouseController:
         game = self.games[game_uuid]
         # update safe fields
         if 'sensor_data' in new_state:
-            sd = new_state['sensor_data'] or [0, 0, 0, 0, 0]
-            game['sensor_data'] = (list(sd)[:5] + [0]*5)[:5]
+            sd = new_state['sensor_data']
+            if sd is None:
+                game['sensor_data'] = [0, 0, 0, 0, 0]
+            else:
+                game['sensor_data'] = (list(sd)[:5] + [0]*5)[:5]
         for key in ('total_time_ms', 'goal_reached', 'best_time_ms', 'run_time_ms', 'run', 'momentum', 'orientation'):
             if key in new_state:
                 game[key] = new_state[key]
@@ -539,11 +616,15 @@ class MicromouseController:
         self._update_position_from_momentum(game)
 
         # Check goal reached
-        if self._is_in_goal_area(game['position']) and game.get('momentum', 0) == 0:
-            game['goal_reached'] = True
-            if game['best_time_ms'] is None or game['run_time_ms'] < game['best_time_ms']:
-                game['best_time_ms'] = game['run_time_ms']
-            logger.info("Game %s reached goal! run_time_ms=%s", game_uuid, game['run_time_ms'])
+        if self._is_in_goal_area(game['position']):
+            if game.get('momentum', 0) == 0:
+                game['goal_reached'] = True
+                if game['best_time_ms'] is None or game['run_time_ms'] < game['best_time_ms']:
+                    game['best_time_ms'] = game['run_time_ms']
+                logger.info("Game %s reached goal! run_time_ms=%s", game_uuid, game['run_time_ms'])
+            else:
+                # In goal area but still moving - need to brake
+                logger.info("Game %s in goal area but still moving (momentum=%s), need to brake", game_uuid, game.get('momentum', 0))
 
         # If back at origin with momentum 0 -> new run possible
         if game['position'] == (0, 0) and game.get('momentum', 0) == 0:
@@ -567,12 +648,17 @@ class MicromouseController:
         elif orient == 180:
             dy = 1
         elif orient == 225:
-            dx, dy = -1; dy = 1
+            dx, dy = -1, 1
         elif orient == 270:
             dx = -1
         elif orient == 315:
             dx, dy = -1, -1
+        
+        # Move in the direction of momentum (positive = forward, negative = backward)
         steps = abs(m)
+        if m < 0:  # Reverse momentum - move opposite direction
+            dx, dy = -dx, -dy
+        
         nx, ny = x + dx * steps, y + dy * steps
         nx = max(self.GRID_MIN, min(self.GRID_MAX, nx))
         ny = max(self.GRID_MIN, min(self.GRID_MAX, ny))
