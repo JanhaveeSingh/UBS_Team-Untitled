@@ -947,6 +947,38 @@ def decrypt_keyword(text, keyword):
     return result
 
 
+def decrypt_polybius(text):
+    """Polybius square cipher decryption (5x5 grid, I/J combined)"""
+    # Create Polybius square
+    polybius_square = [
+        ['A', 'B', 'C', 'D', 'E'],
+        ['F', 'G', 'H', 'I', 'K'],  # I and J share position
+        ['L', 'M', 'N', 'O', 'P'],
+        ['Q', 'R', 'S', 'T', 'U'],
+        ['V', 'W', 'X', 'Y', 'Z']
+    ]
+    
+    # Create reverse mapping
+    reverse_map = {}
+    for row in range(5):
+        for col in range(5):
+            reverse_map[f"{row+1}{col+1}"] = polybius_square[row][col]
+    
+    # Decrypt pairs of digits
+    result = ""
+    for i in range(0, len(text), 2):
+        if i + 1 < len(text):
+            pair = text[i:i+2]
+            if pair in reverse_map:
+                result += reverse_map[pair]
+            else:
+                result += pair
+        else:
+            result += text[i]
+    
+    return result
+
+
 @app.route('/operation-safeguard', methods=['POST'])
 def operation_safeguard():
     """    Expects JSON in the format:
@@ -1393,9 +1425,9 @@ OUTPUT: Respond with ONLY the parameter value (single number, letter, or short w
             decrypted_text = ""
             
             if cipher_type == "RAILFENCE":
-                decrypted_text = decrypt_railfence(encrypted_payload)
+                decrypted_text = decrypt_railfence(encrypted_payload, config.DEFAULT_RAILFENCE_RAILS)
             elif cipher_type == "KEYWORD":
-                decrypted_text = decrypt_keyword(encrypted_payload)
+                decrypted_text = decrypt_keyword(encrypted_payload, config.DEFAULT_KEYWORD)
             elif cipher_type == "POLYBIUS":
                 decrypted_text = decrypt_polybius(encrypted_payload)
             elif cipher_type in ["ROTATION_CIPHER", "CAESAR"]:
@@ -1437,164 +1469,6 @@ OUTPUT: Respond with ONLY the parameter value (single number, letter, or short w
             else:
                 # Unknown cipher type - try common methods
                 decrypted_text = f"Unknown cipher: {cipher_type}"
-            
-            challenge_three_out = decrypted_text
-            # Implement cipher decryption functions
-            def decrypt_railfence(text, rails=config.DEFAULT_RAILFENCE_RAILS):
-                """Decrypt rail fence cipher with 3 rails"""
-                if not text:
-                    return ""
-                
-                # Create the rail pattern
-                rail_pattern = []
-                for i in range(rails):
-                    rail_pattern.append([])
-                
-                # Calculate the pattern for reading
-                rail_lengths = [0] * rails
-                direction = 1
-                rail = 0
-                
-                for i in range(len(text)):
-                    rail_lengths[rail] += 1
-                    rail += direction
-                    if rail == rails - 1 or rail == 0:
-                        direction = -direction
-                
-                # Fill the rails
-                text_index = 0
-                for rail in range(rails):
-                    for pos in range(rail_lengths[rail]):
-                        rail_pattern[rail].append(text[text_index])
-                        text_index += 1
-                
-                # Read the decrypted text
-                result = ""
-                direction = 1
-                rail = 0
-                rail_positions = [0] * rails
-                
-                for i in range(len(text)):
-                    result += rail_pattern[rail][rail_positions[rail]]
-                    rail_positions[rail] += 1
-                    rail += direction
-                    if rail == rails - 1 or rail == 0:
-                        direction = -direction
-                
-                return result
-            
-            def decrypt_keyword(text, keyword=config.DEFAULT_KEYWORD):
-                """Decrypt keyword substitution cipher using 'SHADOW'"""
-                # Create cipher alphabet with keyword first, removing duplicates
-                cipher_alphabet = ""
-                seen = set()
-                for char in keyword.upper():
-                    if char.isalpha() and char not in seen:
-                        cipher_alphabet += char
-                        seen.add(char)
-                
-                # Add remaining alphabet characters not in keyword
-                for char in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
-                    if char not in seen:
-                        cipher_alphabet += char
-                
-                # Create substitution mapping (cipher alphabet maps to normal alphabet)
-                substitution = {}
-                normal_alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-                for i, cipher_char in enumerate(cipher_alphabet):
-                    if i < len(normal_alphabet):
-                        substitution[cipher_char] = normal_alphabet[i]
-                
-                # Decrypt the text
-                result = ""
-                for char in text.upper():
-                    if char in substitution:
-                        result += substitution[char]
-                    else:
-                        result += char
-                
-                return result
-            
-            def decrypt_polybius(text):
-                """Decrypt Polybius square cipher (5x5 grid, I/J combined)"""
-                # Create Polybius square
-                polybius_square = [
-                    ['A', 'B', 'C', 'D', 'E'],
-                    ['F', 'G', 'H', 'I', 'K'],  # I and J share position
-                    ['L', 'M', 'N', 'O', 'P'],
-                    ['Q', 'R', 'S', 'T', 'U'],
-                    ['V', 'W', 'X', 'Y', 'Z']
-                ]
-                
-                # Create reverse mapping
-                reverse_map = {}
-                for row in range(5):
-                    for col in range(5):
-                        reverse_map[f"{row+1}{col+1}"] = polybius_square[row][col]
-                
-                # Decrypt pairs of digits
-                result = ""
-                for i in range(0, len(text), 2):
-                    if i + 1 < len(text):
-                        pair = text[i:i+2]
-                        if pair in reverse_map:
-                            result += reverse_map[pair]
-                        else:
-                            result += pair
-                    else:
-                        result += text[i]
-                
-                return result
-            
-            # Decrypt based on cipher type
-            decrypted_text = ""
-            if cipher_type == "RAILFENCE":
-                decrypted_text = decrypt_railfence(encrypted_payload)
-            elif cipher_type == "KEYWORD":
-                decrypted_text = decrypt_keyword(encrypted_payload)
-            elif cipher_type == "POLYBIUS":
-                decrypted_text = decrypt_polybius(encrypted_payload)
-            elif cipher_type == "ROTATION_CIPHER":
-                # Handle rotation cipher (Caesar cipher) - try different shifts
-                def decrypt_rotation(text, shift):
-                    result = ""
-                    for char in text.upper():
-                        if char.isalpha():
-                            result += chr((ord(char) - ord('A') - shift) % 26 + ord('A'))
-                        else:
-                            result += char
-                    return result
-                
-                # Try common rotation shifts, prioritizing ROT13
-                best_result = ""
-                best_score = 0
-                
-                for shift in [13, 1, 3, 5, 7, 9, 11, 15, 17, 19, 21, 23, 25]:
-                    candidate = decrypt_rotation(encrypted_payload, shift)
-                    
-                    # Score based on common English words and patterns
-                    score = 0
-                    upper_candidate = candidate.upper()
-                    
-                    # Check for common English words
-                    common_words = ["THE", "AND", "FOR", "ARE", "BUT", "NOT", "YOU", "ALL", "CAN", "HAD", "HER", "WAS", "ONE", "OUR", "OUT", "DAY", "GET", "HAS", "HIM", "HIS", "HOW", "MAN", "NEW", "NOW", "OLD", "SEE", "TWO", "WAY", "WHO", "BOY", "DID", "ITS", "LET", "PUT", "SAY", "SHE", "TOO", "USE", "ATTACK", "MISSION", "TARGET", "SECURE", "AGENT", "OPERATION", "INTEL", "STATUS", "REPORT", "CONFIRM", "COMPLETE"]
-                    for word in common_words:
-                        if word in upper_candidate:
-                            score += len(word)
-                    
-                    # Check for reasonable letter frequency (E, T, A, O, I, N should be common)
-                    common_letters = "ETAOIN"
-                    for letter in common_letters:
-                        score += upper_candidate.count(letter) * 0.5
-                    
-                    # Prefer results that look more like English
-                    if score > best_score or (score == best_score and shift == 13):
-                        best_result = candidate
-                        best_score = score
-                
-                decrypted_text = best_result if best_result else decrypt_rotation(encrypted_payload, 13)
-            else:
-                decrypted_text = f"Unknown cipher type: {cipher_type}"
             
             challenge_three_out = decrypted_text
         else:
