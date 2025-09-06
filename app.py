@@ -3,7 +3,6 @@ import socket
 
 from routes import app
 
-
 logger = logging.getLogger(__name__)
 
 
