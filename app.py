@@ -11,16 +11,23 @@ logger = logging.getLogger(__name__)
 
 @app.route('/', methods=['GET', 'POST'])
 def default_route():
-    # Try returning just the team name as plain text
-    return Response("UBS_Team-Untitled", mimetype='text/plain')
+    return jsonify({
+        "teamName": "UBS_Team-Untitled",
+        "status": "ACTIVE",
+        "members": [],
+        "score": 0
+    })
 
 @app.route('/api/coolcodehackteam/<username>', methods=['GET', 'POST'])
 def register_team(username):
     return jsonify({
-        "teamName": "UBS_Team-Untitled",
-        "username": username,
-        "status": "registered"
+        "username": "CX8de3ce71-3cbTY",
+        "password": "Gunraj@260905"
     })
+
+@app.route('/test', methods=['GET', 'POST'])
+def test_endpoint():
+    return jsonify({"message": "test response", "team": "UBS_Team-Untitled"})
 
 
 logger = logging.getLogger()
