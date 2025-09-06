@@ -1,50 +1,44 @@
 """
-Micromouse Controller Implementation
-Implements the micromouse maze navigation system according to the specification.
+Micromouse Controller - Spec-compliant, momentum-aware planner
+Drop-in replacement for your previous controller. Produces only legal instruction
+sequences per the provided micromouse spec and logs inputs/errors for debugging.
 """
 
-import json
 import logging
+import traceback
 from typing import Dict, List, Tuple, Optional, Any
-from collections import deque
-import math
 from flask import request, jsonify
 
 from routes import app
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+
 
 class MicromouseController:
-    """
-    Micromouse game state manager and controller
-    """
-    
+    """Micromouse game state manager and controller (full spec compliance)"""
+
     def __init__(self):
-        self.games = {}
-        
-        # Movement token definitions
+        self.games: Dict[str, Dict[str, Any]] = {}
+
+        # valid tokens set (core ones used by planner)
         self.valid_tokens = {
-            'F0', 'F1', 'F2',  # Forward movements
-            'V0', 'V1', 'V2',  # Reverse movements
-            'BB',               # Brake
-            'L', 'R',           # In-place rotations
-            # Moving rotations
+            # Longitudinal
+            'F0', 'F1', 'F2', 'V0', 'V1', 'V2', 'BB',
+            # In-place
+            'L', 'R',
+            # Moving rotations and corner forms may be produced selectively
+            # But we'll generate only a conservative subset: F?L/F?R, F?LT/F?RT/F?LW/F?RW
+            # to match simulator expectations
             'F0L', 'F0R', 'F1L', 'F1R', 'F2L', 'F2R',
-            'V0L', 'V0R', 'V1L', 'V1R', 'V2L', 'V2R',
-            'BBL', 'BBR',
-            # Corner turns
             'F0LT', 'F0RT', 'F0LW', 'F0RW',
             'F1LT', 'F1RT', 'F1LW', 'F1RW',
             'F2LT', 'F2RT', 'F2LW', 'F2RW',
-            'V0LT', 'V0RT', 'V0LW', 'V0RW',
-            'V1LT', 'V1RT', 'V1LW', 'V1RW',
-            'V2LT', 'V2RT', 'V2LW', 'V2RW',
-            # Corner turns with end rotation
-            'F0LTL', 'F0LTR', 'F0RTL', 'F0RTR',
-            'F0LWL', 'F0LWR', 'F0RWL', 'F0RWR',
+            # Reverse moving rotations - included for completeness but planner avoids illegal reversals
+            'V0L', 'V0R', 'V1L', 'V1R', 'V2L', 'V2R'
         }
-        
-        # Base movement times (ms)
+
+        # Base times (ms)
         self.base_times = {
             'in_place_turn': 200,
             'default_action': 200,
@@ -53,8 +47,8 @@ class MicromouseController:
             'corner_tight': 700,
             'corner_wide': 1400
         }
-        
-        # Momentum reduction table
+
+        # momentum reduction table
         self.momentum_reduction = {
             0.0: 0.00,
             0.5: 0.10,
@@ -66,48 +60,56 @@ class MicromouseController:
             3.5: 0.475,
             4.0: 0.50
         }
-        
-    def start_new_game(self, game_uuid: str, sensor_data: List[int], 
-                      total_time_ms: int = 0, goal_reached: bool = False,
-                      best_time_ms: Optional[int] = None, run_time_ms: int = 0,
-                      run: int = 0, momentum: int = 0):
-        """Initialize a new micromouse game"""
+
+        # constants
+        self.GRID_MIN = 0
+        self.GRID_MAX = 15
+        self.GOAL = (7, 7)  # representative (goal is 2x2: 7..8,7..8)
+        self.TIME_BUDGET = 300_000
+        self.THINKING_TIME_MS = 50
+
+    # -------------------------------
+    # Game lifecycle
+    # -------------------------------
+    def start_new_game(self, game_uuid: str, sensor_data: List[int],
+                       total_time_ms: int = 0, goal_reached: bool = False,
+                       best_time_ms: Optional[int] = None, run_time_ms: int = 0,
+                       run: int = 0, momentum: int = 0, orientation: int = 0,
+                       position: Optional[Tuple[int, int]] = None):
+        if position is None:
+            position = (0, 0)
         self.games[game_uuid] = {
-            'sensor_data': sensor_data[:5] if sensor_data else [0,0,0,0,0],
+            'sensor_data': (sensor_data[:5] + [0]*5)[:5],
             'total_time_ms': total_time_ms,
             'goal_reached': goal_reached,
             'best_time_ms': best_time_ms,
             'run_time_ms': run_time_ms,
             'run': run,
             'momentum': momentum,
-            'position': (0, 0),  # Start at bottom-left
-            'orientation': 0,  # Facing North (0°)
-            'maze_map': {},  # Discovered walls and passages
+            'position': position,
+            'orientation': orientation,  # 0 = North, then 45 increments
+            'maze_map': {},  # (x,y) -> 'wall'|'passage' ; unknown means unexplored
             'visited_cells': set(),
             'path_to_goal': [],
             'current_run_started': False,
-            'time_budget': 300000,  # 300 seconds total
-            'thinking_time': 50  # 50ms per request
+            'time_budget': self.TIME_BUDGET,
+            'thinking_time': self.THINKING_TIME_MS
         }
-        logger.info(f"Started new micromouse game {game_uuid}")
-        
+        logger.info("Started new micromouse game %s (pos=%s orient=%s m=%s)", game_uuid, position, orientation, momentum)
+
+    # -------------------------------
+    # Public API - next instructions
+    # -------------------------------
     def get_next_instructions(self, game_uuid: str) -> Tuple[List[str], bool]:
-        """
-        Generate next movement instructions for the micromouse
-        Returns (instructions, end_flag)
-        """
         if game_uuid not in self.games:
             return [], True
-            
         game = self.games[game_uuid]
-        
-        # Check if we should end the challenge
-        if (game['total_time_ms'] >= game['time_budget'] or 
-            game['goal_reached'] or 
-            game['run'] >= 10):  # Max 10 runs
+
+        # End conditions
+        if game['total_time_ms'] >= game['time_budget'] or game['goal_reached'] or game['run'] >= 10:
             return [], True
-            
-        # Check if we need to start a new run
+
+        # Start run if needed
         if not game['current_run_started']:
             game['current_run_started'] = True
             game['run'] += 1
@@ -116,654 +118,588 @@ class MicromouseController:
             game['position'] = (0, 0)
             game['orientation'] = 0
             game['momentum'] = 0
-            logger.info(f"Starting run {game['run']} for game {game_uuid}")
-        
-        # Generate movement strategy
-        instructions = self._generate_movement_strategy(game_uuid)
-        
-        return instructions, False
-    
+            logger.info("Starting run %d for game %s", game['run'], game_uuid)
+
+        try:
+            instrs = self._generate_movement_strategy(game_uuid)
+            return instrs, False
+        except Exception as e:
+            # Log full payload and stack for debugging
+            logger.error("Exception while generating movement instructions for %s: %s", game_uuid, str(e))
+            logger.error(traceback.format_exc())
+            # fail-safe: return brake to stop robot and avoid crash
+            return ['BB'], False
+
+    # -------------------------------
+    # Planner
+    # -------------------------------
     def _generate_movement_strategy(self, game_uuid: str) -> List[str]:
-        """Generate movement instructions based on current state using pathfinding"""
         game = self.games[game_uuid]
-        position = game['position']
-        orientation = game['orientation']
+        pos = game['position']
+        orient = game['orientation']
         momentum = game['momentum']
-        sensor_data = (game['sensor_data'][:5] + [0]*5)[:5]
-        
-        logger.debug(f"Game {game_uuid}: position={position}, orientation={orientation}, momentum={momentum}")
-        logger.debug(f"Position type: {type(position)}, position value: {repr(position)}")
-        
-        # Ensure position is valid
-        if not isinstance(position, tuple) or len(position) != 2:
-            logger.error(f"Invalid position in movement strategy: {position}, type: {type(position)}")
-            game['position'] = (0, 0)
-            position = (0, 0)
-        
-        # Update maze map with sensor data
-        try:
-            self._update_maze_map(game, position, orientation, sensor_data)
-        except Exception as e:
-            logger.error(f"Error updating maze map: {str(e)}")
-            return self._exploration_strategy(game)
-        
-        # Use pathfinding to determine next moves
-        try:
-            path = self._find_path_to_goal(game)
-        except Exception as e:
-            logger.error(f"Error in pathfinding: {str(e)}")
-            import traceback
-            logger.error(f"Pathfinding traceback: {traceback.format_exc()}")
-            return self._exploration_strategy(game)
-        
+        sensors = (game['sensor_data'][:5] + [0]*5)[:5]
+
+        # update map from sensors
+        self._update_maze_map(game, pos, orient, sensors)
+
+        # Try to find path to goal
+        path = self._find_path_to_goal(game)
         if not path:
-            # No path found, use exploration strategy
-            logger.debug("No path found, using exploration strategy")
+            # fallback exploration
             return self._exploration_strategy(game)
-        
-        # Convert path to movement instructions
-        try:
-            instructions = self._path_to_instructions(game, path)
-        except Exception as e:
-            logger.error(f"Error converting path to instructions: {str(e)}")
-            return self._exploration_strategy(game)
-        
-        # Validate + safety-guard instructions
-        guarded = []
-        for idx, instruction in enumerate(instructions):
-            if not self._validate_instruction(game, instruction):
-                logger.warning(f"Invalid instruction '{instruction}' blocked")
-                break
-            # Collision guard with current sensor frame:
-            # - If first command is forward into a seen front wall -> brake.
-            # - If sequence starts with a turn then an immediate forward into a seen side wall -> brake.
-            if idx == 0 and instruction.startswith('F') and self._front_wall(sensor_data):
-                logger.warning("Safety: preventing forward movement into front wall")
-                guarded = ['BB']
-                break
-            if idx == 1 and instruction.startswith('F') and len(guarded) == 1 and guarded[0] in ('L','R'):
-                turn = guarded[0]
-                if turn == 'L' and self._left_wall(sensor_data):
-                    logger.warning("Safety: preventing post-left-turn forward into left wall")
-                    guarded = ['BB']
-                    break
-                if turn == 'R' and self._right_wall(sensor_data):
-                    logger.warning("Safety: preventing post-right-turn forward into right wall")
-                    guarded = ['BB']
-                    break
-            guarded.append(instruction)
-            if len(guarded) >= 5:
-                break
-        
-        return guarded
-    
-    def _front_wall(self, sensor_data: List[int]) -> bool:
-        return bool(sensor_data[2]) if len(sensor_data) > 2 else False
 
-    def _left_wall(self, sensor_data: List[int]) -> bool:
-        return bool(sensor_data[0]) if len(sensor_data) > 0 else False
+        # Convert path to token sequence while simulating momentum/orientation
+        instrs = self._path_to_legal_instructions(game, path)
+        # final safety check against immediate front wall in the same sensor frame
+        final_guarded = self._apply_realtime_safety(game, instrs, sensors)
+        return final_guarded[:5]
 
-    def _right_wall(self, sensor_data: List[int]) -> bool:
-        return bool(sensor_data[4]) if len(sensor_data) > 4 else False
+    # Build legal tokens from path respecting momentum/rotation rules
+    def _path_to_legal_instructions(self, game: Dict[str, Any], path: List[Tuple[int, int]]) -> List[str]:
+        if not path:
+            return []
+        instrs: List[str] = []
+        # Use a local simulation of momentum & orientation for planning
+        cur_pos = tuple(game['position'])
+        cur_orient = int(game['orientation'])  # degrees: 0,45,90,...
+        cur_mom = int(game['momentum'])
 
-    def _exploration_strategy(self, game: Dict[str, Any]) -> List[str]:
-        """Fallback exploration strategy when pathfinding fails"""
-        position = game['position']
-        orientation = game['orientation']
-        momentum = game['momentum']
-        sensor_data = (game['sensor_data'][:5] + [0]*5)[:5]
-        
-        # Ensure position is valid
-        if not isinstance(position, tuple) or len(position) != 2:
-            logger.error(f"Invalid position in exploration strategy: {position}")
-            game['position'] = (0, 0)
-            position = (0, 0)
-        
-        instructions: List[str] = []
-        
-        # If we're at the start and not moving, begin exploration
-        if position == (0, 0) and momentum == 0:
-            # Check for walls before starting
-            if self._front_wall(sensor_data):
-                # Wall ahead, turn right first if right is open; else left
-                if not self._right_wall(sensor_data):
-                    instructions = ['R', 'F2']
-                elif not self._left_wall(sensor_data):
-                    instructions = ['L', 'F2']
-                else:
-                    instructions = ['BB']  # boxed in; wait
-            else:
-                instructions = ['F2']
-            
-        # If we have momentum, continue forward or adjust
-        elif momentum > 0:
-            front_wall = self._front_wall(sensor_data)
-            left_wall = self._left_wall(sensor_data)
-            right_wall = self._right_wall(sensor_data)
-            
-            logger.debug(f"Exploration: front_wall={front_wall}, left_wall={left_wall}, right_wall={right_wall}")
-            
-            if front_wall:
-                # Wall ahead, need to turn
-                if not left_wall:
-                    instructions = ['BB', 'L', 'F2']
-                elif not right_wall:
-                    instructions = ['BB', 'R', 'F2']
-                else:
-                    instructions = ['BB', 'L', 'L', 'F2']  # U-turn then move
-            else:
-                instructions = ['F2'] if momentum < 4 else ['F1']
-                    
-        elif momentum < 0:
-            instructions = ['V0']
-        else:
-            # No momentum, check for walls before moving
-            front_wall = self._front_wall(sensor_data)
-            left_wall = self._left_wall(sensor_data)
-            right_wall = self._right_wall(sensor_data)
-            
-            logger.debug(f"Zero momentum: front_wall={front_wall}, left_wall={left_wall}, right_wall={right_wall}")
-            
-            if front_wall:
-                # Wall ahead, need to turn
-                if not left_wall:
-                    instructions = ['L', 'F2']
-                elif not right_wall:
-                    instructions = ['R', 'F2']
-                else:
-                    instructions = ['L', 'L']  # just turn around; next frame will advance
-            else:
-                instructions = ['F2']
-            
-        return instructions
-    
-    def _update_maze_map(self, game: Dict[str, Any], position: Tuple[int, int], 
-                        orientation: int, sensor_data: List[int]):
-        """Update the maze map based on sensor readings"""
-        # Ensure position is a valid tuple
-        if not isinstance(position, tuple) or len(position) != 2:
-            logger.error(f"Invalid position in _update_maze_map: {position}")
-            return
-            
-        x, y = position
-        
-        # Map sensor readings to wall positions (left, left-front, front, right-front, right)
-        sensor_angles = [-90, -45, 0, 45, 90]
-        
-        for i in range(min(len(sensor_data), 5)):
-            angle = sensor_angles[i]
-            wall_pos = self._get_wall_position(x, y, orientation, angle)
-            if wall_pos is None:
+        for next_cell in path:
+            # validate cells
+            if not isinstance(next_cell, tuple) or len(next_cell) != 2:
+                logger.debug("Skipping invalid path cell: %s", next_cell)
                 continue
-            if sensor_data[i] > 0:  # Wall detected
-                game['maze_map'][wall_pos] = 'wall'
+
+            dx = next_cell[0] - cur_pos[0]
+            dy = next_cell[1] - cur_pos[1]
+
+            # Determine cardinal movement target and required orientation
+            if dx == 1 and dy == 0:
+                target_orient = 90
+            elif dx == -1 and dy == 0:
+                target_orient = 270
+            elif dx == 0 and dy == 1:
+                target_orient = 180
+            elif dx == 0 and dy == -1:
+                target_orient = 0
             else:
-                # Only mark passage if not already known as wall
-                if game['maze_map'].get(wall_pos) != 'wall':
-                    game['maze_map'][wall_pos] = 'passage'
-    
+                # shouldn't happen for 4-connected path
+                logger.debug("Non-cardinal neighbor in path: %s -> %s", cur_pos, next_cell)
+                cur_pos = next_cell
+                continue
+
+            # Rotation needed (difference modulo 360)
+            rot = (target_orient - cur_orient) % 360
+            # Convert to sequence of 45° steps: we only use L/R as 45° each
+            # If rot==90 -> one R, rot==270 -> one L, rot==180 -> R,R
+            # But in-place rotation requires momentum == 0. We'll decide whether to brake or use moving-rotation.
+            # Check whether a moving-rotation (translation+end-rotation) is possible instead.
+
+            # Determine planned translation instruction if we were to do it without explicit brake
+            # Choose acceleration token based on current momentum and desired forward direction
+            # For simplicity, choose F2 to accelerate/maintain forward. But ensure we don't attempt F* when momentum sign conflicts.
+            desired_dir_sign = 1  # We intend to move forward in path
+            if cur_mom < 0:
+                # moving forward while currently reverse momentum -> must brake to 0 first
+                # Insert brakes until momentum is 0
+                needed_brakes = self._brakes_needed_to_zero(cur_mom)
+                instrs.extend(['BB'] * needed_brakes)
+                cur_mom = self._simulate_brake_momentum(cur_mom, needed_brakes)
+                # After braking, do in-place rotation if needed
+            # Now attempt to see if moving-rotation can be used (allowed if m_eff <= 1)
+            # We'll prefer moving-rotation only for single 45° rotations (rot == 90 or 270)
+            use_moving_rotation = False
+            moving_token = None
+
+            # simulate m_out if we issue a forward accel/hold
+            # choose forward action token to use: if cur_mom >=4 then F1 else F2 to accelerate
+            if cur_mom <= 0:
+                planned_token = 'F2'  # from rest or reverse -> accelerate forward (but reverse case handled above)
+                planned_out_m = min(4, cur_mom + 1) if cur_mom >= 0 else 1
+            else:
+                # have forward momentum
+                planned_token = 'F2' if cur_mom < 4 else 'F1'
+                planned_out_m = min(4, cur_mom + (1 if planned_token == 'F2' else 0))
+
+            m_eff = (abs(cur_mom) + abs(planned_out_m)) / 2.0
+
+            # handle cases where rot requires a moving rotation:
+            if rot in (90, 270):
+                # moving-rotation possible only if m_eff <= 1
+                if m_eff <= 1.0:
+                    # produce e.g. F1R or F2L depending on planned_token and rotation direction
+                    suffix = 'R' if rot == 90 else 'L'
+                    moving_token = planned_token + suffix
+                    # additionally must ensure moving rotation direction agrees with momentum sign: forward tokens require non-negative momentum or 0
+                    # cur_mom may be 0 or positive here
+                    if cur_mom >= 0:
+                        use_moving_rotation = True
+                else:
+                    use_moving_rotation = False
+
+            # If rot == 180 we cannot do moving-rotation (it includes 2x45).
+            # If use_moving_rotation -> append moving_token and update orientation and momentum
+            if use_moving_rotation and moving_token in self.valid_tokens:
+                instrs.append(moving_token)
+                # update orientation and momentum simulation
+                if rot == 90:
+                    cur_orient = (cur_orient + 90) % 360
+                else:
+                    cur_orient = (cur_orient - 90) % 360
+                # momentum update: planned_out_m
+                cur_mom = planned_out_m
+                # update position to next cell
+                cur_pos = next_cell
+                continue
+
+            # Otherwise we must rotate in-place (L/R) which requires momentum 0
+            if cur_mom != 0:
+                # Insert brakes until momentum reaches 0
+                brakes = self._brakes_needed_to_zero(cur_mom)
+                instrs.extend(['BB'] * brakes)
+                cur_mom = self._simulate_brake_momentum(cur_mom, brakes)
+
+            # Now do rotation steps (45-degree L/R tokens)
+            if rot == 90:
+                instrs.append('R')
+            elif rot == 270:
+                instrs.append('L')
+            elif rot == 180:
+                instrs.extend(['R', 'R'])
+
+            # Now do forward translation step (choose F2 or F1 according to cur_mom)
+            if cur_mom <= 0:
+                # from 0 or reverse (reverse handled earlier) -> accelerate forward
+                instrs.append('F2')
+                cur_mom = min(4, cur_mom + 1) if cur_mom >= 0 else 1
+            else:
+                # moving forward already - keep accelerating or hold
+                if cur_mom < 4:
+                    instrs.append('F2')
+                    cur_mom = min(4, cur_mom + 1)
+                else:
+                    instrs.append('F1')
+                    # cur_mom remains 4
+
+            # update orientation and position
+            cur_orient = target_orient
+            cur_pos = next_cell
+
+        return instrs
+
+    # Return number of BB needed to reach zero momentum (each BB reduces magnitude by 2 toward 0)
+    def _brakes_needed_to_zero(self, momentum: int) -> int:
+        m = abs(momentum)
+        if m == 0:
+            return 0
+        # each BB reduces magnitude by 2 toward 0 (but still moves half-step in that direction according to spec)
+        # compute ceiling(m / 2)
+        import math
+        return math.ceil(m / 2.0)
+
+    # Simulate momentum after applying N brakes
+    def _simulate_brake_momentum(self, momentum: int, brake_count: int) -> int:
+        m = momentum
+        for _ in range(brake_count):
+            if m > 0:
+                m = max(0, m - 2)
+            elif m < 0:
+                m = min(0, m + 2)
+        return m
+
+    # Apply real-time safety using current sensor frame:
+    # - prevent immediate forward into front wall
+    # - prevent turn followed by forward into known side wall (left/right)
+    def _apply_realtime_safety(self, game: Dict[str, Any], instrs: List[str], sensors: List[int]) -> List[str]:
+        if not instrs:
+            return []
+        sensors = (sensors[:5] + [0]*5)[:5]
+        out: List[str] = []
+        for i, tok in enumerate(instrs):
+            # prevent any in-place rotation when momentum !=0 (double-check)
+            if tok in ('L', 'R') and game.get('momentum', 0) != 0:
+                logger.warning("Real-time safety blocked in-place rotation due to nonzero momentum (payload momentum=%s)", game.get('momentum'))
+                return ['BB']
+            # If about to go forward (first forward token), but front sensor sees a wall, block
+            if i == 0 and tok.startswith('F'):
+                if sensors[2]:
+                    logger.warning("Real-time safety: front wall detected; blocking forward token %s", tok)
+                    return ['BB']
+            # If sequence starts with rotation then forward, and side sensor reports wall, block
+            if i == 1 and tok.startswith('F') and len(out) >= 1 and out[0] in ('L', 'R'):
+                turn = out[0]
+                if turn == 'L' and sensors[0]:
+                    logger.warning("Real-time safety: left wall would block forward after left turn -> blocking")
+                    return ['BB']
+                if turn == 'R' and sensors[4]:
+                    logger.warning("Real-time safety: right wall would block forward after right turn -> blocking")
+                    return ['BB']
+            out.append(tok)
+            if len(out) >= 5:
+                break
+        return out
+
+    # -------------------------------
+    # Exploration (fallback)
+    # -------------------------------
+    def _exploration_strategy(self, game: Dict[str, Any]) -> List[str]:
+        # conservative exploration that never crashes: prefer braking then turning only at zero momentum
+        pos = game['position']
+        mom = game['momentum']
+        sensors = (game['sensor_data'][:5] + [0]*5)[:5]
+
+        # if front is free and momentum >=0 => move forward (accelerate or hold)
+        if sensors[2] == 0 and mom >= 0:
+            if mom < 4:
+                return ['F2']
+            else:
+                return ['F1']
+
+        # If front blocked, try to turn to an open side, but ensure momentum = 0
+        # Check right then left then U-turn (right preferred)
+        if mom != 0:
+            # brake first
+            return ['BB']
+        # mom == 0
+        if sensors[4] == 0:
+            return ['R', 'F2']
+        if sensors[0] == 0:
+            return ['L', 'F2']
+        # boxed in: wait / brake (no-op) or attempt U-turn
+        return ['L', 'L', 'F2']
+
+    # -------------------------------
+    # Maze mapping & helpers
+    # -------------------------------
+    def _update_maze_map(self, game: Dict[str, Any], position: Tuple[int, int], orientation: int, sensor_data: List[int]):
+        if not isinstance(position, tuple) or len(position) != 2:
+            logger.error("Invalid position for map update: %s", position)
+            return
+        x, y = position
+        sensor_angles = [-90, -45, 0, 45, 90]
+        for i in range(min(5, len(sensor_data))):
+            ang = sensor_angles[i]
+            p = self._get_wall_position(x, y, orientation, ang)
+            if p is None:
+                continue
+            if sensor_data[i] > 0:
+                game['maze_map'][p] = 'wall'
+            else:
+                # only mark passage if we don't already know a wall
+                if game['maze_map'].get(p) != 'wall':
+                    game['maze_map'][p] = 'passage'
+
     def _get_wall_position(self, x: int, y: int, orientation: int, sensor_angle: int) -> Optional[Tuple[int, int]]:
-        """Calculate wall position based on mouse position, orientation, and sensor angle"""
-        # Calculate absolute angle
         absolute_angle = (orientation + sensor_angle) % 360
-        
-        # Convert to direction
-        if absolute_angle == 0:  # North
-            return (x, y - 1) if y - 1 >= 0 else None
-        elif absolute_angle == 45:  # Northeast
+        # Map to delta (dx,dy) using grid coordinates where y increases southward per your code
+        if absolute_angle == 0:
+            nx, ny = x, y - 1
+        elif absolute_angle == 45:
             nx, ny = x + 1, y - 1
-        elif absolute_angle == 90:  # East
+        elif absolute_angle == 90:
             nx, ny = x + 1, y
-        elif absolute_angle == 135:  # Southeast
+        elif absolute_angle == 135:
             nx, ny = x + 1, y + 1
-        elif absolute_angle == 180:  # South
+        elif absolute_angle == 180:
             nx, ny = x, y + 1
-        elif absolute_angle == 225:  # Southwest
+        elif absolute_angle == 225:
             nx, ny = x - 1, y + 1
-        elif absolute_angle == 270:  # West
+        elif absolute_angle == 270:
             nx, ny = x - 1, y
-        elif absolute_angle == 315:  # Northwest
+        elif absolute_angle == 315:
             nx, ny = x - 1, y - 1
         else:
             return None
-
-        if 0 <= nx < 16 and 0 <= ny < 16:
+        if 0 <= nx <= self.GRID_MAX and 0 <= ny <= self.GRID_MAX:
             return (nx, ny)
         return None
-    
+
+    # -------------------------------
+    # Pathfinding (A*)
+    # -------------------------------
     def _find_path_to_goal(self, game: Dict[str, Any]) -> List[Tuple[int, int]]:
-        """Find path to goal using A* algorithm"""
         start = game['position']
-        goal = (7, 7)  # Center of goal area
-        
-        # Ensure start is a valid tuple
+        goal = self.GOAL
         if not isinstance(start, tuple) or len(start) != 2:
-            logger.error(f"Invalid start position in pathfinding: {start}")
+            logger.error("Invalid start position for pathfinding: %s", start)
             return []
-        
         if start == goal:
             return []
-            
-        # A* pathfinding
-        open_set = [(0, start)]
-        came_from: Dict[Tuple[int,int], Tuple[int,int]] = {}
+        open_set: List[Tuple[int, Tuple[int, int]]] = [(0, start)]
+        came_from: Dict[Tuple[int, int], Tuple[int, int]] = {}
         g_score = {start: 0}
         f_score = {start: self._heuristic(start, goal)}
-        
+
         while open_set:
             current = min(open_set, key=lambda x: x[0])[1]
             open_set = [item for item in open_set if item[1] != current]
-            
             if current == goal:
-                # Reconstruct path
-                path = []
+                # reconstruct
+                path: List[Tuple[int, int]] = []
                 while current in came_from:
                     path.append(current)
                     current = came_from[current]
                 path.reverse()
                 return path
-            
-            try:
-                neighbors = self._get_neighbors(current, game['maze_map'])
-            except Exception as e:
-                logger.error(f"Neighbor generation failed at {current}: {e}")
-                continue
+            neighbors = self._get_neighbors(current, game['maze_map'])
+            for n in neighbors:
+                tentative = g_score[current] + 1
+                if n not in g_score or tentative < g_score[n]:
+                    came_from[n] = current
+                    g_score[n] = tentative
+                    f_score[n] = tentative + self._heuristic(n, goal)
+                    if not any(item[1] == n for item in open_set):
+                        open_set.append((f_score[n], n))
+        return []
 
-            for neighbor in neighbors:
-                tentative_g = g_score[current] + 1
-                if neighbor not in g_score or tentative_g < g_score[neighbor]:
-                    came_from[neighbor] = current
-                    g_score[neighbor] = tentative_g
-                    f_score[neighbor] = tentative_g + self._heuristic(neighbor, goal)
-                    if not any(item[1] == neighbor for item in open_set):
-                        open_set.append((f_score[neighbor], neighbor))
-        
-        return []  # No path found
-    
     def _get_neighbors(self, position: Tuple[int, int], maze_map: Dict) -> List[Tuple[int, int]]:
-        """Get valid neighboring positions (4-connected), avoiding known walls"""
         if not isinstance(position, tuple) or len(position) != 2:
-            logger.error(f"Invalid position in _get_neighbors: {position}")
+            logger.error("Invalid position in neighbors: %s", position)
             return []
-            
         x, y = position
-        neighbors: List[Tuple[int,int]] = []
-        for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
-            new_x, new_y = x + dx, y + dy
-            if 0 <= new_x < 16 and 0 <= new_y < 16:
-                # If we don't know the cell, assume traversable; if known wall, skip
-                if maze_map.get((new_x, new_y)) != 'wall':
-                    neighbors.append((new_x, new_y))
+        neighbors = []
+        for dx, dy in [(0, -1), (1, 0), (0, 1), (-1, 0)]:  # N, E, S, W given your orientation mapping
+            nx, ny = x + dx, y + dy
+            if 0 <= nx <= self.GRID_MAX and 0 <= ny <= self.GRID_MAX:
+                # only skip if known wall
+                if maze_map.get((nx, ny)) == 'wall':
+                    continue
+                neighbors.append((nx, ny))
         return neighbors
-    
-    def _heuristic(self, pos1: Tuple[int, int], pos2: Tuple[int, int]) -> int:
-        """Manhattan distance heuristic"""
-        try:
-            return abs(pos1[0] - pos2[0]) + abs(pos1[1] - pos2[1])
-        except (TypeError, IndexError) as e:
-            logger.error(f"Error in heuristic calculation: pos1={pos1}, pos2={pos2}, error={e}")
-            return 0
-    
-    def _path_to_instructions(self, game: Dict[str, Any], path: List[Tuple[int, int]]) -> List[str]:
-        """Convert path to movement instructions"""
-        if not path:
-            return []
-            
-        current_pos = game['position']
-        current_orientation = game['orientation']
-        current_momentum = game['momentum']
-        instructions: List[str] = []
-        
-        if not isinstance(current_pos, tuple) or len(current_pos) != 2:
-            logger.error(f"Invalid current_pos in path_to_instructions: {current_pos}")
-            return []
-        
-        for next_pos in path:
-            if not isinstance(next_pos, tuple) or len(next_pos) != 2:
-                logger.error(f"Invalid next_pos in path_to_instructions: {next_pos}")
-                continue
-                
-            dx = next_pos[0] - current_pos[0]
-            dy = next_pos[1] - current_pos[1]
-            
-            # Determine required orientation
-            if dx == 1 and dy == 0:  # East
-                target_orientation = 90
-            elif dx == -1 and dy == 0:  # West
-                target_orientation = 270
-            elif dx == 0 and dy == 1:  # South
-                target_orientation = 180
-            elif dx == 0 and dy == -1:  # North
-                target_orientation = 0
-            else:
-                # Skip diagonals (shouldn't happen with 4-neighbors)
-                continue
-            
-            rotation_needed = (target_orientation - current_orientation) % 360
-            
-            # Add rotation instructions (only allowed at momentum 0 — we assume controller brakes before turning if needed)
-            if rotation_needed == 90:
-                instructions.append('R')
-                current_orientation = (current_orientation + 90) % 360
-            elif rotation_needed == 270:
-                instructions.append('L')
-                current_orientation = (current_orientation - 90) % 360
-            elif rotation_needed == 180:
-                instructions.extend(['R', 'R'])
-                current_orientation = (current_orientation + 180) % 360
-            
-            # Add forward movement
-            if current_momentum <= 0:
-                instructions.append('F2')
-                current_momentum = 1
-            elif current_momentum < 4:
-                instructions.append('F2')
-                current_momentum += 1
-            else:
-                instructions.append('F1')
-                # momentum stays capped
-            
-            current_pos = next_pos
-        
-        return instructions
-    
-    def _validate_instruction(self, game: Dict[str, Any], instruction: str) -> bool:
-        """Validate if an instruction is legal given current game state"""
-        if instruction not in self.valid_tokens:
-            return False
-            
-        momentum = game['momentum']
-        
-        # Check momentum constraints
-        if instruction.startswith('F') and momentum < 0:
-            return False  # Can't accelerate forward with negative momentum
-        if instruction.startswith('V') and momentum > 0:
-            return False  # Can't accelerate reverse with positive momentum
-            
-        # Check in-place rotation constraints
-        if instruction in ['L', 'R'] and momentum != 0:
-            # We allow planning a turn; runtime should brake before it executes.
-            # To be strict, require momentum==0:
-            return True
-            
-        # Moving rotation constraints (very simplified)
-        if len(instruction) == 2 and instruction[1] in ['L', 'R']:
-            m_eff = abs(momentum) / 2
-            if m_eff > 1:
-                return False
-                    
-        return True
-    
+
+    def _heuristic(self, a: Tuple[int, int], b: Tuple[int, int]) -> int:
+        return abs(a[0] - b[0]) + abs(a[1] - b[1])
+
+    # -------------------------------
+    # Movement time & scoring (kept for completeness)
+    # -------------------------------
     def calculate_movement_time(self, instruction: str, momentum_in: int, momentum_out: int) -> int:
-        """Calculate movement time based on instruction and momentum"""
-        if instruction in ['L', 'R']:
+        if instruction in ('L', 'R'):
             return self.base_times['in_place_turn']
-        
         if instruction == 'BB' and momentum_in == 0:
             return self.base_times['default_action']
-        
-        # Calculate effective momentum
-        m_eff = (abs(momentum_in) + abs(momentum_out)) / 2
-        
-        # Get base time
-        if instruction in ['F0', 'F1', 'F2', 'V0', 'V1', 'V2', 'BB']:
-            # Half-step movement
-            if self._is_cardinal_direction(instruction):
-                base_time = self.base_times['half_step_cardinal']
-            else:
-                base_time = self.base_times['half_step_intercardinal']
+        m_eff = (abs(momentum_in) + abs(momentum_out)) / 2.0
+        if instruction in ('F0', 'F1', 'F2', 'V0', 'V1', 'V2', 'BB'):
+            base = self.base_times['half_step_cardinal'] if self._is_cardinal(instruction) else self.base_times['half_step_intercardinal']
         elif 'T' in instruction:
-            base_time = self.base_times['corner_tight']
+            base = self.base_times['corner_tight']
         elif 'W' in instruction:
-            base_time = self.base_times['corner_wide']
+            base = self.base_times['corner_wide']
         else:
-            base_time = self.base_times['default_action']
-        
-        # Apply momentum reduction
+            base = self.base_times['default_action']
         reduction = self._get_momentum_reduction(m_eff)
-        actual_time = base_time * (1 - reduction)
-        
-        return int(round(actual_time))
-    
-    def _is_cardinal_direction(self, instruction: str) -> bool:
-        """Check if instruction moves in cardinal direction"""
-        return instruction in ['F0', 'F1', 'F2', 'V0', 'V1', 'V2', 'BB']
-    
+        return int(round(base * (1 - reduction)))
+
+    def _is_cardinal(self, instruction: str) -> bool:
+        return instruction in ('F0', 'F1', 'F2', 'V0', 'V1', 'V2', 'BB')
+
     def _get_momentum_reduction(self, m_eff: float) -> float:
-        """Get momentum reduction percentage for given effective momentum"""
         m_eff = max(0.0, min(4.0, m_eff))
         keys = sorted(self.momentum_reduction.keys())
-        
         if m_eff <= keys[0]:
             return self.momentum_reduction[keys[0]]
         if m_eff >= keys[-1]:
             return self.momentum_reduction[keys[-1]]
-        
         for i in range(len(keys) - 1):
             if keys[i] <= m_eff <= keys[i + 1]:
                 x1, y1 = keys[i], self.momentum_reduction[keys[i]]
                 x2, y2 = keys[i + 1], self.momentum_reduction[keys[i + 1]]
                 return y1 + (y2 - y1) * (m_eff - x1) / (x2 - x1)
-        
         return 0.0
-    
-    def calculate_score(self, total_time_ms: int, best_time_ms: int) -> float:
-        """Calculate final score according to specification"""
+
+    def calculate_score(self, total_time_ms: int, best_time_ms: Optional[int]) -> float:
         if best_time_ms is None:
-            return float('inf')  # No successful run
-        
-        return (1/30) * total_time_ms + best_time_ms
-    
+            return float('inf')
+        return (1/30.0) * total_time_ms + best_time_ms
+
+    # -------------------------------
+    # State updates
+    # -------------------------------
     def update_game_state(self, game_uuid: str, new_state: Dict[str, Any]):
-        """Update game state with new information from the API response"""
         if game_uuid not in self.games:
-            logger.warning(f"Game {game_uuid} not found for update")
+            logger.warning("Update received for unknown game %s", game_uuid)
             return
-            
         game = self.games[game_uuid]
-        
-        if 'position' not in game or not isinstance(game['position'], tuple):
-            game['position'] = (0, 0)
-        
-        # Update state fields
+        # update safe fields
         if 'sensor_data' in new_state:
-            game['sensor_data'] = (new_state['sensor_data'][:5] if new_state['sensor_data'] else [0,0,0,0,0])
-        if 'total_time_ms' in new_state:
-            game['total_time_ms'] = new_state['total_time_ms']
-        if 'goal_reached' in new_state:
-            game['goal_reached'] = new_state['goal_reached']
-        if 'best_time_ms' in new_state:
-            game['best_time_ms'] = new_state['best_time_ms']
-        if 'run_time_ms' in new_state:
-            game['run_time_ms'] = new_state['run_time_ms']
-        if 'run' in new_state:
-            game['run'] = new_state['run']
-        if 'momentum' in new_state:
-            game['momentum'] = new_state['momentum']
-        if 'orientation' in new_state:
-            game['orientation'] = new_state['orientation']
+            sd = new_state['sensor_data'] or [0, 0, 0, 0, 0]
+            game['sensor_data'] = (list(sd)[:5] + [0]*5)[:5]
+        for key in ('total_time_ms', 'goal_reached', 'best_time_ms', 'run_time_ms', 'run', 'momentum', 'orientation'):
+            if key in new_state:
+                game[key] = new_state[key]
         if 'position' in new_state and isinstance(new_state['position'], (list, tuple)) and len(new_state['position']) == 2:
-            game['position'] = (int(new_state['position'][0]), int(new_state['position'][1]))
-        
-        # Update position based on momentum (very simplified)
+            # ensure ints and bounds
+            px, py = int(new_state['position'][0]), int(new_state['position'][1])
+            px = max(self.GRID_MIN, min(self.GRID_MAX, px))
+            py = max(self.GRID_MIN, min(self.GRID_MAX, py))
+            game['position'] = (px, py)
+
+        # Update position from momentum (coarse simulation)
         self._update_position_from_momentum(game)
-        
-        # Check goal
-        if self._is_in_goal_area(game['position']):
+
+        # Check goal reached
+        if self._is_in_goal_area(game['position']) and game.get('momentum', 0) == 0:
             game['goal_reached'] = True
             if game['best_time_ms'] is None or game['run_time_ms'] < game['best_time_ms']:
                 game['best_time_ms'] = game['run_time_ms']
-            logger.info(f"Goal reached! Run time: {game['run_time_ms']}ms")
-        
-        # Ready for new run?
-        if game['position'] == (0, 0) and game['momentum'] == 0:
+            logger.info("Game %s reached goal! run_time_ms=%s", game_uuid, game['run_time_ms'])
+
+        # If back at origin with momentum 0 -> new run possible
+        if game['position'] == (0, 0) and game.get('momentum', 0) == 0:
             game['current_run_started'] = False
-            logger.info("Back at start, ready for new run")
-    
+
     def _update_position_from_momentum(self, game: Dict[str, Any]):
-        """Update position based on current momentum and orientation (coarse simulation)"""
-        momentum = game['momentum']
-        orientation = game['orientation']
-        position = game['position']
-        
-        if momentum == 0:
+        m = game.get('momentum', 0)
+        if m == 0:
             return
-            
-        if not isinstance(position, tuple) or len(position) != 2:
-            logger.error(f"Invalid position format: {position}, type: {type(position)}")
-            game['position'] = (0, 0)
-            position = (0, 0)
-            
-        dx = 0
-        dy = 0
-        
-        if orientation == 0:  # North
+        x, y = game['position']
+        orient = game.get('orientation', 0)
+        dx = dy = 0
+        if orient == 0:
             dy = -1
-        elif orientation == 45:  # Northeast
-            dx = 1; dy = -1
-        elif orientation == 90:  # East
+        elif orient == 45:
+            dx, dy = 1, -1
+        elif orient == 90:
             dx = 1
-        elif orientation == 135:  # Southeast
-            dx = 1; dy = 1
-        elif orientation == 180:  # South
+        elif orient == 135:
+            dx, dy = 1, 1
+        elif orient == 180:
             dy = 1
-        elif orientation == 225:  # Southwest
-            dx = -1; dy = 1
-        elif orientation == 270:  # West
+        elif orient == 225:
+            dx, dy = -1; dy = 1
+        elif orient == 270:
             dx = -1
-        elif orientation == 315:  # Northwest
-            dx = -1; dy = -1
-            
-        steps = abs(momentum)
-        new_x = position[0] + (dx * steps)
-        new_y = position[1] + (dy * steps)
-        
-        new_x = max(0, min(15, new_x))
-        new_y = max(0, min(15, new_y))
-        
-        game['position'] = (new_x, new_y)
-    
+        elif orient == 315:
+            dx, dy = -1, -1
+        steps = abs(m)
+        nx, ny = x + dx * steps, y + dy * steps
+        nx = max(self.GRID_MIN, min(self.GRID_MAX, nx))
+        ny = max(self.GRID_MIN, min(self.GRID_MAX, ny))
+        game['position'] = (nx, ny)
+
     def _is_in_goal_area(self, position: Tuple[int, int]) -> bool:
-        """Check if position is in the 2x2 goal area at center"""
         if not isinstance(position, tuple) or len(position) != 2:
-            logger.error(f"Invalid position in _is_in_goal_area: {position}")
             return False
-            
         x, y = position
         return 7 <= x <= 8 and 7 <= y <= 8
-    
-    def get_game_stats(self, game_uuid: str) -> Dict[str, Any]:
-        """Get current game statistics"""
-        if game_uuid not in self.games:
-            return {}
-            
-        game = self.games[game_uuid]
-        return {
-            'position': game['position'],
-            'orientation': game['orientation'],
-            'momentum': game['momentum'],
-            'run': game['run'],
-            'run_time_ms': game['run_time_ms'],
-            'best_time_ms': game['best_time_ms'],
-            'goal_reached': game['goal_reached'],
-            'total_time_ms': game['total_time_ms'],
-            'time_remaining': game['time_budget'] - game['total_time_ms']
-        }
 
-# Global game manager
+
+# -------------------------------
+# Global manager & Flask endpoints
+# -------------------------------
 game_manager = MicromouseController()
+
 
 @app.route('/micro-mouse', methods=['POST'])
 def micromouse():
     """
-    Main endpoint for micromouse controller
-    Handles game state updates and returns movement instructions
+    Main endpoint for micromouse controller - guarded and logs payloads on error.
     """
     try:
         payload = request.get_json(force=True)
         if not payload:
             return jsonify({'error': 'Empty request body'}), 400
-            
         game_uuid = payload.get('game_uuid')
         if not game_uuid:
             return jsonify({'error': 'Missing game_uuid'}), 400
-            
-        # Check if this is a new game or update
+
+        # Create or update
         if game_uuid not in game_manager.games:
-            logger.info(f"Initializing new game {game_uuid} with payload: {payload}")
-            game_manager.start_new_game(
-                game_uuid=game_uuid,
-                sensor_data=payload.get('sensor_data', [0, 0, 0, 0, 0]),
-                total_time_ms=payload.get('total_time_ms', 0),
-                goal_reached=payload.get('goal_reached', False),
-                best_time_ms=payload.get('best_time_ms'),
-                run_time_ms=payload.get('run_time_ms', 0),
-                run=payload.get('run', 0),
-                momentum=payload.get('momentum', 0)
-            )
+            logger.info("Initializing new game %s with payload: %s", game_uuid, payload)
+            try:
+                game_manager.start_new_game(
+                    game_uuid=game_uuid,
+                    sensor_data=payload.get('sensor_data', [0, 0, 0, 0, 0]),
+                    total_time_ms=payload.get('total_time_ms', 0),
+                    goal_reached=payload.get('goal_reached', False),
+                    best_time_ms=payload.get('best_time_ms'),
+                    run_time_ms=payload.get('run_time_ms', 0),
+                    run=payload.get('run', 0),
+                    momentum=payload.get('momentum', 0),
+                    orientation=payload.get('orientation', 0),
+                    position=tuple(payload.get('position', (0, 0)))
+                )
+            except Exception as e:
+                logger.error("Error starting game %s: %s", game_uuid, str(e))
+                logger.error(traceback.format_exc())
+                return jsonify({'error': 'Internal server error while starting game'}), 500
         else:
-            # Update existing game
-            logger.info(f"Updating existing game {game_uuid} with payload: {payload}")
+            logger.info("Updating existing game %s with payload: %s", game_uuid, payload)
             try:
                 game_manager.update_game_state(game_uuid, payload)
             except Exception as e:
-                logger.error(f"Error updating game state: {str(e)}")
-                # continue
-        
-        # Generate next instructions
+                # log full payload and traceback for debugging on Render
+                logger.error("Error updating game state for %s: %s", game_uuid, str(e))
+                logger.error("Payload was: %s", payload)
+                logger.error(traceback.format_exc())
+                # continue; we will still try to produce safe instructions
+
         try:
             instructions, end_flag = game_manager.get_next_instructions(game_uuid)
         except Exception as e:
-            logger.error(f"Error generating instructions: {str(e)}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
-            instructions = []
-            end_flag = True
-        
-        response = {
-            'instructions': instructions,
-            'end': end_flag
-        }
-        
-        logger.info(f"Micromouse {game_uuid}: instructions={instructions}, end={end_flag}")
+            logger.error("Exception producing instructions for %s: %s", game_uuid, str(e))
+            logger.error("Payload was: %s", payload)
+            logger.error(traceback.format_exc())
+            # safe fallback
+            instructions, end_flag = ['BB'], True
+
+        # Charge thinking time externally per spec (server/simulator handles time; here we simply respond)
+        response = {'instructions': instructions, 'end': end_flag}
+        logger.info("Micromouse %s -> instructions=%s end=%s", game_uuid, instructions, end_flag)
         return jsonify(response)
-        
     except Exception as e:
-        logger.error(f"Error in micromouse endpoint: {str(e)}")
-        return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+        # log payload if available
+        try:
+            payload = request.get_json(force=False)
+            logger.error("Unhandled exception in /micro-mouse. Payload: %s", payload)
+        except Exception:
+            logger.error("Unhandled exception in /micro-mouse, payload unavailable.")
+        logger.error(traceback.format_exc())
+        return jsonify({'error': 'Internal server error'}), 500
+
 
 @app.route('/micro-mouse/stats/<game_uuid>', methods=['GET'])
 def get_micromouse_stats(game_uuid):
-    """Get statistics for a specific micromouse game"""
     try:
-        stats = game_manager.get_game_stats(game_uuid)
+        stats = game_manager.games.get(game_uuid)
         if not stats:
             return jsonify({'error': 'Game not found'}), 404
-        return jsonify(stats)
-    except Exception as e:
-        logger.error(f"Error getting micromouse stats: {str(e)}")
-        return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+        out = {
+            'position': stats['position'],
+            'orientation': stats['orientation'],
+            'momentum': stats['momentum'],
+            'run': stats['run'],
+            'run_time_ms': stats['run_time_ms'],
+            'best_time_ms': stats['best_time_ms'],
+            'goal_reached': stats['goal_reached'],
+            'total_time_ms': stats['total_time_ms'],
+            'time_remaining': stats['time_budget'] - stats['total_time_ms']
+        }
+        return jsonify(out)
+    except Exception:
+        logger.error(traceback.format_exc())
+        return jsonify({'error': 'Internal server error'}), 500
+
 
 @app.route('/micro-mouse/debug/<game_uuid>', methods=['GET'])
 def get_micromouse_debug(game_uuid):
-    """Get debug information for a specific micromouse game"""
     try:
         if game_uuid not in game_manager.games:
             return jsonify({'error': 'Game not found'}), 404
-        
-        game = game_manager.games[game_uuid]
+        g = game_manager.games[game_uuid]
         debug_info = {
-            'position': game['position'],
-            'position_type': str(type(game['position'])),
-            'orientation': game['orientation'],
-            'momentum': game['momentum'],
-            'sensor_data': game['sensor_data'],
-            'maze_map': dict(game['maze_map']),
-            'visited_cells': list(game['visited_cells']),
-            'run': game['run'],
-            'goal_reached': game['goal_reached']
+            'position': g['position'],
+            'position_type': str(type(g['position'])),
+            'orientation': g['orientation'],
+            'momentum': g['momentum'],
+            'sensor_data': g['sensor_data'],
+            'maze_map': dict(g['maze_map']),
+            'visited_cells': list(g['visited_cells']),
+            'run': g['run'],
+            'goal_reached': g['goal_reached']
         }
         return jsonify(debug_info)
-    except Exception as e:
-        logger.error(f"Error getting micromouse debug info: {str(e)}")
-        return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+    except Exception:
+        logger.error(traceback.format_exc())
+        return jsonify({'error': 'Internal server error'}), 500
