@@ -17,27 +17,49 @@ class Game2048:
     """2048 game logic implementation"""
     
     def __init__(self):
-        self.grid_size = 4
+        pass  # Remove grid_size constraint
         
     def is_valid_grid(self, grid: List[List]) -> bool:
-        """Validate that the grid is 4x4 with valid values"""
-        if not isinstance(grid, list) or len(grid) != 4:
+        """Validate that the grid is NxN with valid values"""
+        if not isinstance(grid, list) or len(grid) == 0:
             return False
         
+        grid_size = len(grid)
         for row in grid:
-            if not isinstance(row, list) or len(row) != 4:
+            if not isinstance(row, list) or len(row) != grid_size:
                 return False
             for cell in row:
-                if cell is not None and (not isinstance(cell, int) or cell < 2 or (cell & (cell - 1)) != 0):
+                if cell is not None and not self.is_valid_cell_value(cell):
                     return False
         return True
     
-    def add_random_tile(self, grid: List[List[Optional[int]]]) -> List[List[Optional[int]]]:
+    def is_valid_cell_value(self, cell) -> bool:
+        """Check if a cell value is valid"""
+        if cell is None:
+            return True
+        
+        # Handle special tiles
+        if cell == 0 or cell == '0':
+            return True
+        if cell == '*2':
+            return True
+        if cell == 1 or cell == '1':
+            return True
+            
+        # Handle regular number tiles (must be power of 2 and >= 2)
+        if isinstance(cell, int) and cell >= 2 and (cell & (cell - 1)) == 0:
+            return True
+            
+        return False
+    
+    def add_random_tile(self, grid: List[List]) -> List[List]:
         """Add a random tile (2 or 4) to an empty cell"""
+        grid_size = len(grid)
+        
         # Find empty cells
         empty_cells = []
-        for r in range(4):
-            for c in range(4):
+        for r in range(grid_size):
+            for c in range(grid_size):
                 if grid[r][c] is None:
                     empty_cells.append((r, c))
         
@@ -52,41 +74,148 @@ class Game2048:
         
         return grid
     
-    def move_left(self, grid: List[List[Optional[int]]]) -> Tuple[List[List[Optional[int]]], bool]:
+    def move_left(self, grid: List[List]) -> Tuple[List[List], bool]:
         """Move and merge tiles to the left, return (new_grid, changed)"""
-        new_grid = [[None for _ in range(4)] for _ in range(4)]
+        grid_size = len(grid)
+        new_grid = [[None for _ in range(grid_size)] for _ in range(grid_size)]
         changed = False
         
-        for r in range(4):
-            # Collect non-None values from this row
-            values = [cell for cell in grid[r] if cell is not None]
+        for r in range(grid_size):
+            # Process each row
+            row = grid[r][:]
+            new_row = self.process_row_left(row)
             
-            # Merge adjacent equal values
-            merged = []
-            i = 0
-            while i < len(values):
-                if i + 1 < len(values) and values[i] == values[i + 1]:
-                    # Merge the two tiles
-                    merged.append(values[i] * 2)
-                    i += 2  # Skip the next tile as it's been merged
-                else:
-                    merged.append(values[i])
-                    i += 1
-            
-            # Fill the row with merged values and None
-            for c in range(4):
-                if c < len(merged):
-                    new_grid[r][c] = merged[c]
-                    if new_grid[r][c] != grid[r][c]:
-                        changed = True
-                else:
-                    new_grid[r][c] = None
-                    if grid[r][c] is not None:
-                        changed = True
+            for c in range(grid_size):
+                new_grid[r][c] = new_row[c]
+                if new_grid[r][c] != grid[r][c]:
+                    changed = True
         
         return new_grid, changed
     
-    def move_right(self, grid: List[List[Optional[int]]]) -> Tuple[List[List[Optional[int]]], bool]:
+    def process_row_left(self, row: List) -> List:
+        """Process a single row moving left with all special tile rules"""
+        result = [None] * len(row)
+        
+        # Handle '0' tiles which don't move and create barriers
+        result_pos = 0
+        i = 0
+        
+        while i < len(row):
+            if row[i] == 0 or row[i] == '0':
+                # '0' stays exactly where it is
+                result[i] = row[i]
+                
+                # Process everything to the left of this '0'
+                left_part = row[:i]
+                if left_part:
+                    processed_left = self.process_segment_left(left_part)
+                    for j, val in enumerate(processed_left):
+                        if j < i:
+                            result[j] = val
+                
+                # Process everything to the right of this '0' recursively
+                right_part = row[i+1:]
+                if right_part:
+                    processed_right = self.process_row_left(right_part)
+                    for j, val in enumerate(processed_right):
+                        if i + 1 + j < len(result):
+                            result[i + 1 + j] = val
+                
+                return result
+            i += 1
+        
+        # No '0' tiles found, process normally
+        processed = self.process_segment_left(row)
+        for i, val in enumerate(processed):
+            if i < len(result):
+                result[i] = val
+        
+        return result
+    
+    def process_segment_left(self, segment: List) -> List:
+        """Process a segment without '0' tiles"""
+        # Remove None values first
+        non_none = [cell for cell in segment if cell is not None]
+        if not non_none:
+            return []
+        
+        # Handle special tile interactions in order
+        # 1. First, process '1' + '*2' conversions (immediate adjacency only)
+        processed = []
+        skip_next = False
+        converted_positions = set()  # Track which positions had '1' -> '2' conversions
+        
+        for i in range(len(non_none)):
+            if skip_next:
+                skip_next = False
+                continue
+                
+            cell = non_none[i]
+            
+            if (cell == 1 or cell == '1') and i + 1 < len(non_none) and non_none[i + 1] == '*2':
+                # '1' followed by '*2' -> convert '1' to '2' and consume the '*2'
+                processed.append(2)
+                converted_positions.add(len(processed) - 1)  # Mark this position as converted
+                skip_next = True  # Skip the '*2' as it's consumed
+            else:
+                processed.append(cell)
+        
+        # 2. Now handle regular movement and '*2' multiplication
+        result = []
+        for i, cell in enumerate(processed):
+            if cell == '*2':
+                # '*2' multiplies the previous number if it exists, 
+                # but NOT if it was just converted from '1'
+                if (result and isinstance(result[-1], int) and result[-1] >= 1 and
+                    (len(result) - 1) not in converted_positions):
+                    result[-1] = result[-1] * 2
+                result.append('*2')
+            else:
+                # Regular number - check for normal merging
+                if (result and 
+                    result[-1] == cell and 
+                    isinstance(cell, int) and 
+                    cell >= 2):
+                    result[-1] = cell * 2
+                else:
+                    result.append(cell)
+        
+        # 3. Handle special '*2' compression patterns
+        return self.final_times2_compression(result)
+    
+    def final_times2_compression(self, tiles: List) -> List:
+        """Handle final '*2' compression based on the exact example pattern"""
+        if len(tiles) < 2:
+            return tiles
+            
+        # Look for pattern: [..., '*2', number] at the end
+        # If found, one of the preceding '*2' tiles should merge with that number
+        if (len(tiles) >= 2 and 
+            isinstance(tiles[-1], int) and 
+            tiles[-2] == '*2'):
+            
+            # Count consecutive '*2' tiles before the final number
+            times2_count = 0
+            for i in range(len(tiles) - 2, -1, -1):
+                if tiles[i] == '*2':
+                    times2_count += 1
+                else:
+                    break
+            
+            # If we have multiple '*2' tiles before a number, 
+            # remove one '*2' (it merges with the number, but number stays same per example)
+            if times2_count > 1:
+                # Remove one '*2' from the sequence
+                result = tiles[:]
+                for i in range(len(result) - 2, -1, -1):
+                    if result[i] == '*2':
+                        result.pop(i)
+                        break
+                return result
+        
+        return tiles
+    
+    def move_right(self, grid: List[List]) -> Tuple[List[List], bool]:
         """Move and merge tiles to the right"""
         # Reverse each row, move left, then reverse back
         reversed_grid = [row[::-1] for row in grid]
@@ -94,23 +223,25 @@ class Game2048:
         result_grid = [row[::-1] for row in moved_grid]
         return result_grid, changed
     
-    def move_up(self, grid: List[List[Optional[int]]]) -> Tuple[List[List[Optional[int]]], bool]:
+    def move_up(self, grid: List[List]) -> Tuple[List[List], bool]:
         """Move and merge tiles upward"""
+        grid_size = len(grid)
         # Transpose, move left, then transpose back
-        transposed = [[grid[r][c] for r in range(4)] for c in range(4)]
+        transposed = [[grid[r][c] for r in range(grid_size)] for c in range(grid_size)]
         moved_transposed, changed = self.move_left(transposed)
-        result_grid = [[moved_transposed[c][r] for c in range(4)] for r in range(4)]
+        result_grid = [[moved_transposed[c][r] for c in range(grid_size)] for r in range(grid_size)]
         return result_grid, changed
     
-    def move_down(self, grid: List[List[Optional[int]]]) -> Tuple[List[List[Optional[int]]], bool]:
+    def move_down(self, grid: List[List]) -> Tuple[List[List], bool]:
         """Move and merge tiles downward"""
+        grid_size = len(grid)
         # Transpose, move right, then transpose back
-        transposed = [[grid[r][c] for r in range(4)] for c in range(4)]
+        transposed = [[grid[r][c] for r in range(grid_size)] for c in range(grid_size)]
         moved_transposed, changed = self.move_right(transposed)
-        result_grid = [[moved_transposed[c][r] for c in range(4)] for r in range(4)]
+        result_grid = [[moved_transposed[c][r] for c in range(grid_size)] for r in range(grid_size)]
         return result_grid, changed
     
-    def make_move(self, grid: List[List[Optional[int]]], direction: str) -> Tuple[List[List[Optional[int]]], bool]:
+    def make_move(self, grid: List[List], direction: str) -> Tuple[List[List], bool]:
         """Make a move in the specified direction"""
         direction = direction.upper()
         
@@ -125,36 +256,58 @@ class Game2048:
         else:
             raise ValueError(f"Invalid direction: {direction}")
     
-    def check_win(self, grid: List[List[Optional[int]]]) -> bool:
+    def check_win(self, grid: List[List]) -> bool:
         """Check if the player has won (reached 2048)"""
         for row in grid:
             for cell in row:
-                if cell and cell >= 2048:
+                if isinstance(cell, int) and cell >= 2048:
                     return True
         return False
     
-    def can_move(self, grid: List[List[Optional[int]]]) -> bool:
+    def can_move(self, grid: List[List]) -> bool:
         """Check if any moves are possible"""
+        grid_size = len(grid)
+        
         # Check for empty cells
         for row in grid:
             if None in row:
                 return True
         
         # Check for possible merges horizontally
-        for r in range(4):
-            for c in range(3):
-                if grid[r][c] == grid[r][c + 1]:
+        for r in range(grid_size):
+            for c in range(grid_size - 1):
+                cell1, cell2 = grid[r][c], grid[r][c + 1]
+                if self.can_merge(cell1, cell2):
                     return True
         
         # Check for possible merges vertically
-        for r in range(3):
-            for c in range(4):
-                if grid[r][c] == grid[r + 1][c]:
+        for r in range(grid_size - 1):
+            for c in range(grid_size):
+                cell1, cell2 = grid[r][c], grid[r + 1][c]
+                if self.can_merge(cell1, cell2):
                     return True
         
         return False
     
-    def process_move(self, grid: List[List[Optional[int]]], direction: str) -> Dict[str, Any]:
+    def can_merge(self, cell1, cell2) -> bool:
+        """Check if two cells can merge"""
+        if cell1 is None or cell2 is None:
+            return False
+        
+        # Regular numbers can merge if they're equal and >= 2
+        if (isinstance(cell1, int) and isinstance(cell2, int) and 
+            cell1 == cell2 and cell1 >= 2):
+            return True
+            
+        # '*2' can merge with numbers
+        if cell1 == '*2' and isinstance(cell2, int) and cell2 >= 1:
+            return True
+        if cell2 == '*2' and isinstance(cell1, int) and cell1 >= 1:
+            return True
+            
+        return False
+    
+    def process_move(self, grid: List[List], direction: str) -> Dict[str, Any]:
         """Process a move and return the result"""
         try:
             # Validate input

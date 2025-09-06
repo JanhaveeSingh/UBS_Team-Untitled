@@ -111,8 +111,8 @@ class MicromouseController:
             instructions = self._generate_instructions(game)
             return instructions, False
         except Exception as e:
-            logger.error(f"Error generating instructions: {e}")
-            logger.error(traceback.format_exc())
+            logger.info(f"Error generating instructions: {e}")
+            logger.info(traceback.format_exc())
             # Safe fallback - brake to avoid crash
             return ['BB'], False
 
@@ -121,16 +121,24 @@ class MicromouseController:
         momentum = game['momentum']
         sensors = game['sensor_data'][:5]  # Ensure 5 sensors
         orientation = game['orientation']
+        position = game['position']
+        
+        logger.info(f"Current state - Position: {position}, Orientation: {orientation}°, Momentum: {momentum}, Sensors: {sensors}")
         
         # Safety first - if we have momentum and front wall, brake
-        if momentum > 0 and sensors[2] == 1:  # Front sensor detects wall
-            logger.warning("Front wall detected with forward momentum, braking")
+        if momentum > 0 and len(sensors) > 2 and sensors[2] == 1:  # Front sensor detects wall
+            logger.info("Front wall detected with forward momentum, braking")
             return ['BB']
         
         # If at goal with momentum, brake to complete
-        if self._is_in_goal_area(game['position']) and momentum != 0:
+        if self._is_in_goal_area(position) and momentum != 0:
             logger.info("In goal area, braking to complete")
             return ['BB']
+        
+        # If at goal and stopped, we're done
+        if self._is_in_goal_area(position) and momentum == 0:
+            logger.info("Goal reached and stopped!")
+            return []
         
         # Detect if stuck in loop
         if self._is_stuck_in_loop(game):
@@ -140,31 +148,36 @@ class MicromouseController:
         return self._wall_follow_strategy(game)
 
     def _wall_follow_strategy(self, game: Dict[str, Any]) -> List[str]:
-        """Implement right-hand wall following with goal seeking"""
+        """Implement simplified wall following strategy"""
         momentum = game['momentum']
-        sensors = game['sensor_data'][:5]
-        orientation = game['orientation']
+        sensors = game['sensor_data'][:5] if len(game['sensor_data']) >= 5 else [0, 0, 0, 0, 0]
         
         # If we have momentum, need to brake first for full control
-        if momentum != 0:
+        if momentum > 0:
+            logger.info("Braking to stop before making decision")
             return ['BB']
         
-        # Wall following priority: Right > Forward > Left > Back
+        # Simple wall following: prefer right, then forward, then left, then back
+        # sensors: [left, left-front, front, right-front, right]
         
-        # Try right turn if no right wall
-        if sensors[4] == 0:  # No right wall
+        # Priority 1: Turn right if no right wall and no right-front wall
+        if len(sensors) >= 5 and sensors[4] == 0 and sensors[3] == 0:
+            logger.info("Right side clear, turning right and moving")
             return ['R', 'F1']
         
-        # Try forward if no front wall
-        if sensors[2] == 0:  # No front wall
+        # Priority 2: Go forward if no front wall
+        if len(sensors) >= 3 and sensors[2] == 0:
+            logger.info("Front clear, moving forward")
             return ['F1']
         
-        # Try left turn if no left wall
-        if sensors[0] == 0:  # No left wall
+        # Priority 3: Turn left if no left wall
+        if len(sensors) >= 1 and sensors[0] == 0:
+            logger.info("Left side clear, turning left and moving")
             return ['L', 'F1']
         
-        # All directions blocked - turn around
-        return ['R', 'R']  # 180 degree turn
+        # Priority 4: Turn around (all sides blocked)
+        logger.info("All sides blocked, turning around")
+        return ['R', 'R']
 
     def _is_stuck_in_loop(self, game: Dict[str, Any]) -> bool:
         """Detect if mouse is stuck in a repetitive pattern"""
@@ -185,7 +198,7 @@ class MicromouseController:
 
     def _escape_loop(self, game: Dict[str, Any]) -> List[str]:
         """Escape from detected loop"""
-        logger.warning("Loop detected, attempting escape")
+        logger.info("Loop detected, attempting escape")
         game['stuck_counter'] = 0  # Reset counter
         
         # Try different escape strategies
@@ -214,7 +227,7 @@ class MicromouseController:
     def update_game_state(self, game_uuid: str, new_state: Dict[str, Any]):
         """Update game state from API payload"""
         if game_uuid not in self.games:
-            logger.warning(f"Update for unknown game {game_uuid}")
+            logger.info(f"Update for unknown game {game_uuid}")
             return
             
         game = self.games[game_uuid]
@@ -288,8 +301,8 @@ def micromouse():
         return jsonify(response)
         
     except Exception as e:
-        logger.error(f"Error in micromouse endpoint: {e}")
-        logger.error(traceback.format_exc())
+        logger.info(f"Error in micromouse endpoint: {e}")
+        logger.info(traceback.format_exc())
         return jsonify({'error': 'Internal server error'}), 500
 
 
@@ -316,7 +329,7 @@ def get_micromouse_stats(game_uuid):
         return jsonify(stats)
         
     except Exception as e:
-        logger.error(f"Error getting stats: {e}")
+        logger.info(f"Error getting stats: {e}")
         return jsonify({'error': 'Internal server error'}), 500
 
 
@@ -344,5 +357,5 @@ def get_micromouse_debug(game_uuid):
         return jsonify(debug_info)
         
     except Exception as e:
-        logger.error(f"Error getting debug info: {e}")
+        logger.info(f"Error getting debug info: {e}")
         return jsonify({'error': 'Internal server error'}), 500
