@@ -16,6 +16,7 @@ import routes.trading_bot
 import routes.sailing_club
 import routes.micromouse
 import routes.game_2048
+import routes.coolcode_hacker
 
 
 # --- import blueprints ---
@@ -28,3 +29,6 @@ import routes.game_2048
 
 from routes.ink_archive import bp as ink_archive_bp
 app.register_blueprint(ink_archive_bp)
+
+from routes.coolcode_hacker import coolcode_hacker
+app.register_blueprint(coolcode_hacker)

