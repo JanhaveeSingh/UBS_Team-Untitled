@@ -215,19 +215,19 @@ class MazeExplorer:
                 logger.warning(f"Detected loop pattern, submitting early: {last_3}")
                 return None, 'submit', None
         
-        # Balanced submission strategy for correctness vs efficiency
+        # Aggressive submission strategy for better efficiency
         # Submit early if we found all walls or are running out of moves
         if (walls_found >= total_walls or 
-            moves_used >= max_moves * 0.85 or  # Submit at 85% of max moves
-            (walls_found >= total_walls * 0.9 and moves_used >= max_moves * 0.7) or  # Submit at 70% if we found 90% of walls
-            (walls_found >= total_walls * 0.8 and moves_used >= max_moves * 0.8)):  # Submit at 80% if we found 80% of walls
+            moves_used >= max_moves * 0.8 or  # Submit at 80% of max moves
+            (walls_found >= total_walls * 0.85 and moves_used >= max_moves * 0.6) or  # Submit at 60% if we found 85% of walls
+            (walls_found >= total_walls * 0.7 and moves_used >= max_moves * 0.7) or  # Submit at 70% if we found 70% of walls
+            (walls_found >= total_walls * 0.5 and moves_used >= max_moves * 0.9)):  # Submit at 90% if we found 50% of walls
             logger.info(f"Submitting: walls={walls_found}/{total_walls}, moves={moves_used}/{max_moves}")
             return None, 'submit', None
         
-        # Strategy: Prioritize scanning for wall discovery, then systematic exploration
+        # Strategy: Multi-crow coordinated exploration for maximum wall discovery
         
-        # First, find any crow that can scan an unexplored position
-        # Prioritize crows in areas with more potential for wall discovery
+        # First, find the best scanning opportunity across all crows
         best_scan_crow = None
         best_scan_score = -1
         
@@ -246,17 +246,22 @@ class MazeExplorer:
                 best_scan_score = scan_score
                 best_scan_crow = crow_id
                 
-        if best_scan_crow:
-            logger.info(f"Scanning with crow {best_scan_crow} at position {crows[best_scan_crow]}")
+        # Only scan if the score is high enough (avoid wasteful scanning)
+        if best_scan_crow and best_scan_score > 5:
+            logger.info(f"Scanning with crow {best_scan_crow} at position {crows[best_scan_crow]} (score: {best_scan_score})")
             return best_scan_crow, 'scan', None
         
-        # If no scanning opportunities, prioritize moving to areas with high wall potential
-        # This helps ensure we don't miss walls in unexplored areas
+        # If no good scanning opportunities, coordinate movement across all crows
+        # Prioritize moving to unexplored areas with high wall potential
         
-        # If all crows have scanned their positions, find the best move
+        # Multi-crow coordinated movement strategy
+        # Find the best move across all crows, prioritizing different exploration areas
         best_crow = None
         best_direction = None
         best_score = -1
+        
+        # Track which crows have been considered to avoid clustering
+        considered_crows = set()
         
         for crow_id, crow_pos in crows.items():
             if not crow_pos or not isinstance(crow_pos, dict):
@@ -275,12 +280,16 @@ class MazeExplorer:
                     
                 new_x, new_y = self._get_new_position(x, y, direction)
                 
-                # Skip if we've already explored this position
-                if (new_x, new_y) in game_state['explored_cells']:
-                    continue
-                
                 # Calculate score for this move
                 score = self._calculate_move_score(new_x, new_y, game_state)
+                
+                # Bonus for crows that haven't been used recently
+                if crow_id not in considered_crows:
+                    score += 5
+                
+                # Penalty for moving to recently explored areas (unless high value)
+                if (new_x, new_y) in game_state['explored_cells'] and score < 20:
+                    score = 0
                 
                 if score > best_score:
                     best_score = score
@@ -288,7 +297,7 @@ class MazeExplorer:
                     best_direction = direction
         
         if best_crow and best_direction:
-            logger.info(f"Moving crow {best_crow} {best_direction} from {crows[best_crow]}")
+            logger.info(f"Moving crow {best_crow} {best_direction} from {crows[best_crow]} (score: {best_score})")
             return best_crow, 'move', best_direction
         
         # If no good moves found, try any valid move (even to explored areas)
@@ -341,11 +350,11 @@ class MazeExplorer:
             return 0
             
         # Base score for unexplored position
-        score = 15  # Higher base score to encourage exploration
+        score = 20  # Higher base score to encourage exploration
         
         # Check for nearby unexplored areas (balanced radius for thoroughness)
         unexplored_nearby = 0
-        for dx in range(-2, 3):  # Back to 5x5 area for better wall discovery
+        for dx in range(-2, 3):  # 5x5 area for better wall discovery
             for dy in range(-2, 3):
                 check_x, check_y = x + dx, y + dy
                 if (0 <= check_x < self.grid_size and 0 <= check_y < self.grid_size):
@@ -353,17 +362,27 @@ class MazeExplorer:
                         unexplored_nearby += 1
         
         # Score based on nearby unexplored cells
-        score += min(unexplored_nearby, 12)  # Higher cap for better exploration
+        score += min(unexplored_nearby, 15)  # Higher cap for better exploration
         
         # Distance calculation for frontier exploration
         if game_state['explored_cells']:
             # Use Manhattan distance to nearest explored cell
             min_distance = min(abs(x - ex) + abs(y - ey) 
                              for ex, ey in game_state['explored_cells'])
-            score += min(min_distance, 8)  # Higher bonus for frontier exploration
+            score += min(min_distance, 10)  # Higher bonus for frontier exploration
         else:
             # Unexplored area - very high priority
-            score += 15
+            score += 20
+        
+        # Bonus for positions that could reveal walls in multiple directions
+        wall_potential = 0
+        for dx in range(-1, 2):
+            for dy in range(-1, 2):
+                check_x, check_y = x + dx, y + dy
+                if (0 <= check_x < self.grid_size and 0 <= check_y < self.grid_size):
+                    if (check_x, check_y) not in game_state['explored_cells']:
+                        wall_potential += 1
+        score += min(wall_potential, 8)
         
         return score
         
@@ -520,13 +539,38 @@ def fog_of_wall():
                 return jsonify({'error': 'No crows available'}), 400
                 
             # Start with scanning at initial positions
-            first_crow_id = list(crows.keys())[0]
-            return jsonify({
-                'challenger_id': challenger_id,
-                'game_id': game_id,
-                'crow_id': first_crow_id,
-                'action_type': 'scan'
-            })
+            # Choose the crow with the best initial scan potential
+            best_crow = None
+            best_score = -1
+            
+            # Create a temporary explorer to calculate scan values
+            temp_explorer = MazeExplorer(game_state['grid_size'])
+            
+            for crow_id, crow_pos in crows.items():
+                if not crow_pos or not isinstance(crow_pos, dict):
+                    continue
+                x, y = crow_pos['x'], crow_pos['y']
+                score = temp_explorer._calculate_scan_value(x, y, game_state)
+                if score > best_score:
+                    best_score = score
+                    best_crow = crow_id
+            
+            if best_crow:
+                return jsonify({
+                    'challenger_id': challenger_id,
+                    'game_id': game_id,
+                    'crow_id': best_crow,
+                    'action_type': 'scan'
+                })
+            else:
+                # Fallback to first crow
+                first_crow_id = list(crows.keys())[0]
+                return jsonify({
+                    'challenger_id': challenger_id,
+                    'game_id': game_id,
+                    'crow_id': first_crow_id,
+                    'action_type': 'scan'
+                })
             
         # Handle previous action result
         previous_action = payload.get('previous_action')
@@ -593,13 +637,14 @@ def fog_of_wall():
         moves_used = game_state['move_count']
         max_moves = game_state['max_moves']
         
-        # Balanced submission for correctness vs efficiency
+        # Aggressive submission for better efficiency
         should_submit = (
             game_manager.is_game_complete(game_id) or 
             moves_used >= max_moves or
-            (walls_found >= total_walls * 0.9 and moves_used >= max_moves * 0.8) or  # Submit at 80% if we found 90% of walls
-            (walls_found >= total_walls * 0.8 and moves_used >= max_moves * 0.9) or  # Submit at 90% if we found 80% of walls
-            (moves_used >= max_moves * 0.95)  # Hard limit: submit at 95% of max moves
+            (walls_found >= total_walls * 0.8 and moves_used >= max_moves * 0.7) or  # Submit at 70% if we found 80% of walls
+            (walls_found >= total_walls * 0.7 and moves_used >= max_moves * 0.8) or  # Submit at 80% if we found 70% of walls
+            (walls_found >= total_walls * 0.6 and moves_used >= max_moves * 0.9) or  # Submit at 90% if we found 60% of walls
+            (moves_used >= max_moves * 0.9)  # Hard limit: submit at 90% of max moves
         )
         
         if should_submit:

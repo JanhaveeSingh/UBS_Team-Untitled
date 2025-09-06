@@ -506,12 +506,41 @@ def analyze_simple_geometry(coords):
                     "reasoning": f"Coordinates form a simple shape with {len(coords)} points"
                 }
     
-    # Default fallback
+    # Default fallback - try to find a more meaningful pattern
+    # Check if coordinates form a simple geometric pattern
+    if len(coords) >= 3:
+        # Try to find if coordinates form a recognizable shape
+        x_coords = [c[0] for c in coords]
+        y_coords = [c[1] for c in coords]
+        
+        # Check for diagonal patterns
+        if len(set(x_coords)) == len(coords) and len(set(y_coords)) == len(coords):
+            # All coordinates are unique - might form a diagonal or specific pattern
+            return {
+                "parameter": "DIAGONAL",
+                "pattern_type": "diagonal",
+                "confidence": 60,
+                "reasoning": "Coordinates form a diagonal pattern"
+            }
+        
+        # Check for circular patterns
+        centroid_x = statistics.mean(x_coords)
+        centroid_y = statistics.mean(y_coords)
+        distances = [((c[0] - centroid_x) ** 2 + (c[1] - centroid_y) ** 2) ** 0.5 for c in coords]
+        if len(set(round(d, 2) for d in distances)) <= 2:  # Most distances are similar
+            return {
+                "parameter": "CIRCLE",
+                "pattern_type": "circle",
+                "confidence": 60,
+                "reasoning": "Coordinates form a circular pattern"
+            }
+    
+    # Last resort - return coordinate count but with lower confidence
     return {
         "parameter": len(coords),
         "pattern_type": "count",
-        "confidence": 50,
-        "reasoning": f"Returning coordinate count: {len(coords)}"
+        "confidence": 30,
+        "reasoning": f"Fallback to coordinate count: {len(coords)}"
     }
 
 
@@ -866,6 +895,7 @@ def operation_safeguard():
         challenge_one_data = payload.get("challenge_one", {})
         challenge_two_data = payload.get("challenge_two", [])
         challenge_three_data = payload.get("challenge_three", "")
+        challenge_four_data = payload.get("challenge_four", "")
         
         # Validate required fields
         if not challenge_one_data:
@@ -974,19 +1004,19 @@ def operation_safeguard():
                     even_part = word[:even_count]
                     odd_part = word[even_count:]
                     
-                    # Reconstruct original order
-                    original = [''] * len(word)
+                    # Reconstruct original order by interleaving even and odd parts
+                    original = []
                     even_idx = 0
                     odd_idx = 0
                     
                     for i in range(len(word)):
                         if i % 2 == 0:  # Even index
                             if even_idx < len(even_part):
-                                original[i] = even_part[even_idx]
+                                original.append(even_part[even_idx])
                                 even_idx += 1
                         else:  # Odd index
                             if odd_idx < len(odd_part):
-                                original[i] = odd_part[odd_idx]
+                                original.append(odd_part[odd_idx])
                                 odd_idx += 1
                     
                     result_words.append(''.join(original))
@@ -1409,6 +1439,9 @@ Respond with ONLY the decrypted text, no explanations.
     # Use recovered components from previous challenges for final decryption
     challenge_four_out = None
     
+    # Get the encrypted message for Challenge 4
+    encrypted_message = challenge_four_data if challenge_four_data else str(challenge_one_out)
+    
     if challenge_one_out and challenge_two_out and challenge_three_out:
         # Create a comprehensive final decryption using all components
         try:
@@ -1420,32 +1453,32 @@ Respond with ONLY the decrypted text, no explanations.
             
             # Method 1: Caesar cipher with different shifts
             for shift in [1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25]:
-                decryption_attempts[f"caesar_{shift}"] = caesar_decrypt(str(challenge_one_out), shift)
+                decryption_attempts[f"caesar_{shift}"] = caesar_decrypt(str(encrypted_message), shift)
             
             # Method 2: Atbash cipher
-            decryption_attempts["atbash"] = atbash_decrypt(str(challenge_one_out))
+            decryption_attempts["atbash"] = atbash_decrypt(str(encrypted_message))
             
             # Method 3: Reverse the string
-            decryption_attempts["reverse"] = reverse_decrypt(str(challenge_one_out))
+            decryption_attempts["reverse"] = reverse_decrypt(str(encrypted_message))
             
             # Method 4: Vigenère cipher using extracted keys
             for key in key_components.get("potential_keys", []):
                 if isinstance(key, str) and len(key) > 0:
-                    decryption_attempts[f"vigenere_{key}"] = vigenere_decrypt(str(challenge_one_out), key)
+                    decryption_attempts[f"vigenere_{key}"] = vigenere_decrypt(str(encrypted_message), key)
             
             # Method 5: XOR cipher using numeric components
             for num_key in key_components.get("numeric_keys", []):
                 if isinstance(num_key, (int, float)) and num_key > 0:
-                    decryption_attempts[f"xor_{int(num_key)}"] = xor_decrypt(str(challenge_one_out), int(num_key))
+                    decryption_attempts[f"xor_{int(num_key)}"] = xor_decrypt(str(encrypted_message), int(num_key))
             
             # Method 6: Rail fence cipher with different rail counts
             for rails in [2, 3, 4, 5, 6]:
-                decryption_attempts[f"railfence_{rails}"] = decrypt_railfence(str(challenge_one_out), rails)
+                decryption_attempts[f"railfence_{rails}"] = decrypt_railfence(str(encrypted_message), rails)
             
             # Method 7: Keyword substitution using extracted keywords
             for keyword in key_components.get("keywords", []):
                 if isinstance(keyword, str) and len(keyword) > 0:
-                    decryption_attempts[f"keyword_{keyword}"] = decrypt_keyword(str(challenge_one_out), keyword)
+                    decryption_attempts[f"keyword_{keyword}"] = decrypt_keyword(str(encrypted_message), keyword)
             
             # Look for meaningful decrypted text
             meaningful_results = []
@@ -1464,7 +1497,7 @@ Respond with ONLY the decrypted text, no explanations.
                         ai_prompt = f"""
 You are an expert cryptanalyst and intelligence analyst. Decrypt the following encrypted message using all available context.
 
-ENCRYPTED MESSAGE: {challenge_one_out}
+ENCRYPTED MESSAGE: {encrypted_message}
 
 CONTEXT FROM PREVIOUS CHALLENGES:
 - Challenge 1 (Text Obfuscation): {challenge_one_out}
