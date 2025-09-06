@@ -32,12 +32,12 @@ class FogOfWallGame:
         """Initialize a new game with test case data"""
         # Handle None or missing test_case
         if not test_case:
-            logger.error(f"Empty or None test_case provided for game {game_id}")
+            logger.info(f"Empty or None test_case provided for game {game_id}")
             raise ValueError("test_case cannot be None or empty")
             
         # Validate test_case structure
         if not isinstance(test_case, dict):
-            logger.error(f"Invalid test_case type for game {game_id}: {type(test_case)}")
+            logger.info(f"Invalid test_case type for game {game_id}: {type(test_case)}")
             raise ValueError(f"test_case must be a dictionary, got {type(test_case)}")
             
         # Handle None or missing crows
@@ -46,7 +46,7 @@ class FogOfWallGame:
             logger.warning(f"No crows data in test_case for game {game_id}")
             crows_data = []
         elif not isinstance(crows_data, list):
-            logger.error(f"Invalid crows data type for game {game_id}: {type(crows_data)}")
+            logger.info(f"Invalid crows data type for game {game_id}: {type(crows_data)}")
             raise ValueError(f"crows must be a list, got {type(crows_data)}")
             
         # Safely process crows, filtering out None values
@@ -402,25 +402,87 @@ def fog_of_wall():
     start_time = time.time()  # Track execution time for timeout prevention
     
     try:
-        # Fast JSON parsing without extensive logging for production
+        # Parse JSON payload
         try:
             payload = request.get_json(force=True)
         except Exception as e:
+            logger.info(f"Failed to parse JSON: {e}")
             return jsonify({'error': 'Invalid JSON in request body'}), 400
             
         if not payload:
+            logger.info("Empty request body received")
             return jsonify({'error': 'Empty request body'}), 400
-            
+        
+        # DETAILED PAYLOAD LOGGING FOR TRAINING
+        logger.info("="*80)
+        logger.info("FOG OF WALL - DETAILED PAYLOAD ANALYSIS")
+        logger.info("="*80)
+        
+        # Log full payload structure
+        logger.info(f"Full payload keys: {list(payload.keys())}")
+        logger.info(f"Payload size: {len(str(payload))} characters")
+        
         challenger_id = payload.get('challenger_id')
         game_id = payload.get('game_id')
         
+        logger.info(f"Challenger ID: {challenger_id}")
+        logger.info(f"Game ID: {game_id}")
+        
         if not challenger_id or not game_id:
+            logger.info("Missing challenger_id or game_id")
             return jsonify({'error': 'Missing challenger_id or game_id'}), 400
+        
+        # Log test_case details if present
+        if 'test_case' in payload and payload['test_case'] is not None:
+            test_case = payload['test_case']
+            logger.info("NEW TEST CASE DETECTED!")
+            logger.info(f"Test case type: {type(test_case)}")
+            logger.info(f"Test case keys: {list(test_case.keys()) if isinstance(test_case, dict) else 'Not a dict'}")
+            
+            if isinstance(test_case, dict):
+                crows_data = test_case.get('crows', [])
+                logger.info(f"Number of crows: {len(crows_data) if crows_data else 0}")
+                
+                # Log each crow's details
+                for i, crow in enumerate(crows_data[:3]):  # Log first 3 crows to avoid spam
+                    logger.info(f"Crow {i}: {crow}")
+                
+                if len(crows_data) > 3:
+                    logger.info(f"... and {len(crows_data) - 3} more crows")
+                    
+                # Log maze dimensions if available
+                if 'maze_height' in test_case and 'maze_width' in test_case:
+                    logger.info(f"Maze dimensions: {test_case['maze_width']} x {test_case['maze_height']}")
+        
+        # Log previous_action details if present
+        if 'previous_action' in payload and payload['previous_action'] is not None:
+            prev_action = payload['previous_action']
+            logger.info("PREVIOUS ACTION RESPONSE:")
+            logger.info(f"Previous action type: {type(prev_action)}")
+            logger.info(f"Previous action keys: {list(prev_action.keys()) if isinstance(prev_action, dict) else 'Not a dict'}")
+            
+            if isinstance(prev_action, dict):
+                action_type = prev_action.get('action_type')
+                logger.info(f"Action type: {action_type}")
+                
+                if action_type == 'scan':
+                    scan_result = prev_action.get('scan_result', {})
+                    walls = scan_result.get('walls', [])
+                    logger.info(f"Scan result - {len(walls)} walls found")
+                    logger.info(f"Sample walls: {walls[:5] if walls else 'None'}")
+                
+                elif action_type == 'move':
+                    move_result = prev_action.get('move_result', {})
+                    logger.info(f"Move result: {move_result}")
+        
+        logger.info("-" * 80)
         
         # Timeout check - only if we've been running too long
         if time.time() - start_time > 25.0:  # Much more generous 25 second timeout
+            logger.warning(f"Timeout reached for game {game_id}, submitting current progress")
             if game_id in game_manager.games:
                 discovered_walls = game_manager.get_discovered_walls(game_id)
+                logger.info(f"Submitting {len(discovered_walls)} discovered walls due to timeout")
                 return jsonify({
                     'challenger_id': challenger_id,
                     'game_id': game_id,
@@ -428,13 +490,13 @@ def fog_of_wall():
                     'submission': discovered_walls
                 })
             else:
+                logger.info("Timeout and no game state found")
                 return jsonify({'error': 'Timeout and no game state'}), 500
         
-        # Minimal logging for production performance
+        # Check if this is an initial request with valid test_case data
         has_test_case = 'test_case' in payload and payload['test_case'] is not None
         has_previous_action = 'previous_action' in payload and payload['previous_action'] is not None
             
-        # Check if this is an initial request with valid test_case data
         if has_test_case:
             test_case = payload['test_case']
             
@@ -527,6 +589,16 @@ def fog_of_wall():
         if should_submit:
             discovered_walls = game_manager.get_discovered_walls(game_id)
             logger.info(f"Game {game_id} completed: walls={len(discovered_walls)}/{total_walls}, moves={moves_used}")
+            
+            # LOG SUBMISSION RESPONSE
+            logger.info("="*60)
+            logger.info("SUBMITTING FINAL ANSWER")
+            logger.info(f"Game: {game_id}")
+            logger.info(f"Total walls found: {len(discovered_walls)}")
+            logger.info(f"Moves used: {moves_used}")
+            logger.info(f"Sample walls: {discovered_walls[:10] if discovered_walls else 'None'}")
+            logger.info("="*60)
+            
             return jsonify({
                 'challenger_id': challenger_id,
                 'game_id': game_id,
@@ -573,6 +645,10 @@ def fog_of_wall():
             })
             
         if next_action == 'scan':
+            logger.info("="*40)
+            logger.info(f"SENDING SCAN ACTION")
+            logger.info(f"Game: {game_id}, Crow: {next_crow}")
+            logger.info("="*40)
             return jsonify({
                 'challenger_id': challenger_id,
                 'game_id': game_id,
@@ -590,6 +666,11 @@ def fog_of_wall():
                     'action_type': 'submit',
                     'submission': discovered_walls
                 })
+            
+            logger.info("="*40)
+            logger.info(f"SENDING MOVE ACTION")
+            logger.info(f"Game: {game_id}, Crow: {next_crow}, Direction: {direction}")
+            logger.info("="*40)
             return jsonify({
                 'challenger_id': challenger_id,
                 'game_id': game_id,
@@ -608,7 +689,7 @@ def fog_of_wall():
             })
             
     except Exception as e:
-        logger.error(f"Error in fog_of_wall endpoint: {str(e)}")
+        logger.info(f"Error in fog_of_wall endpoint: {str(e)}")
         return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
 @app.route('/fog-of-wall/stats/<game_id>', methods=['GET'])
