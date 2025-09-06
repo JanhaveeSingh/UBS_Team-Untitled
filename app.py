@@ -22,7 +22,10 @@ def default_route():
 def register_team(username):
     return jsonify({
         "username": "CX8de3ce71-3cbTY",
-        "password": "Gunraj@260905"
+        "password": "Gunraj@260905", 
+        "teamName": username,
+        "serverUrl": "https://ubs-team-untitled.onrender.com",
+        "status": "REGISTERED"
     })
 
 @app.route('/test', methods=['GET', 'POST'])
