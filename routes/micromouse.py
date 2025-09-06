@@ -171,16 +171,29 @@ class MicromouseController:
         # final safety check against immediate front wall in the same sensor frame
         final_guarded = self._apply_realtime_safety(game, instrs, sensors)
         
-        # Additional safety: if we still have moving rotations after safety checks, replace with safe alternatives
+        # Keep moving rotations if they're legal (m_eff <= 1), otherwise replace with safe alternatives
         safe_instructions = []
         for instr in final_guarded[:5]:
             if instr in ('F0R', 'F1R', 'F2R', 'F0L', 'F1L', 'F2L'):
-                # Replace moving rotation with brake + in-place turn + forward
-                if instr.endswith('R'):
-                    safe_instructions.extend(['BB', 'R', 'F2'])
-                else:  # ends with 'L'
-                    safe_instructions.extend(['BB', 'L', 'F2'])
-                # Don't break - continue processing remaining instructions
+                # Check if moving rotation is legal based on m_eff
+                if instr.startswith('F0'):
+                    m_out = max(0, momentum - 1)  # F0 decelerates
+                elif instr.startswith('F1'):
+                    m_out = momentum  # F1 holds
+                else:  # F2
+                    m_out = min(4, momentum + 1)  # F2 accelerates
+                
+                m_eff = (abs(momentum) + abs(m_out)) / 2.0
+                
+                if m_eff <= 1.0:
+                    # Moving rotation is legal, keep it
+                    safe_instructions.append(instr)
+                else:
+                    # Replace with brake + in-place turn + forward
+                    if instr.endswith('R'):
+                        safe_instructions.extend(['BB', 'R', 'F2'])
+                    else:  # ends with 'L'
+                        safe_instructions.extend(['BB', 'L', 'F2'])
             else:
                 safe_instructions.append(instr)
         
@@ -247,14 +260,22 @@ class MicromouseController:
             moving_token = None
 
             # simulate m_out if we issue a forward accel/hold
-            # choose forward action token to use: if cur_mom >=4 then F1 else F2 to accelerate
+            # Choose optimal forward action token: prioritize maintaining good speed
             if cur_mom <= 0:
-                planned_token = 'F2'  # from rest or reverse -> accelerate forward (but reverse case handled above)
+                planned_token = 'F2'  # from rest or reverse -> accelerate forward
                 planned_out_m = 1  # F2 always gives +1 momentum
-            else:
-                # have forward momentum
-                planned_token = 'F2' if cur_mom < 4 else 'F1'
-                planned_out_m = min(4, cur_mom + (1 if planned_token == 'F2' else 0))
+            elif cur_mom == 1 or cur_mom == 2:
+                # At good cruising speed - continue accelerating for efficiency
+                planned_token = 'F2'
+                planned_out_m = min(4, cur_mom + 1)
+            elif cur_mom == 3:
+                # Close to max speed - accelerate to maximum for best time reduction
+                planned_token = 'F2'
+                planned_out_m = 4
+            else:  # cur_mom == 4
+                # At maximum speed - maintain it with F1
+                planned_token = 'F1'
+                planned_out_m = 4
 
             m_eff = (abs(cur_mom) + abs(planned_out_m)) / 2.0
 
@@ -310,19 +331,23 @@ class MicromouseController:
             elif rot == 180:
                 instrs.extend(['R', 'R'])
 
-            # Now do forward translation step (choose F2 or F1 according to cur_mom)
+            # Now do forward translation step (optimized token selection)
             if cur_mom <= 0:
                 # from 0 or reverse (reverse handled earlier) -> accelerate forward
                 instrs.append('F2')
                 cur_mom = 1  # F2 always gives +1 momentum
-            else:
-                # moving forward already - keep accelerating or hold
-                if cur_mom < 4:
-                    instrs.append('F2')
-                    cur_mom = min(4, cur_mom + 1)
-                else:
-                    instrs.append('F1')
-                    # cur_mom remains 4
+            elif cur_mom < 3:
+                # Continue accelerating for better speed
+                instrs.append('F2')
+                cur_mom = min(4, cur_mom + 1)
+            elif cur_mom == 3:
+                # Accelerate to maximum speed for best time reduction
+                instrs.append('F2')
+                cur_mom = 4
+            else:  # cur_mom == 4
+                # At maximum speed - maintain it
+                instrs.append('F1')
+                # cur_mom remains 4
 
             # update orientation and position
             cur_orient = target_orient
@@ -374,7 +399,7 @@ class MicromouseController:
                 # Extract the rotation direction
                 if tok.endswith('R'):
                     # Right turn - check if there's a wall to the right after the turn
-                    if sensors[1]:  # Right sensor detects wall
+                    if sensors[4]:  # Right sensor detects wall
                         logger.warning("Real-time safety: right wall detected; blocking moving rotation %s", tok)
                         return ['BB']
                 elif tok.endswith('L'):
@@ -413,35 +438,109 @@ class MicromouseController:
     # Exploration (fallback)
     # -------------------------------
     def _exploration_strategy(self, game: Dict[str, Any]) -> List[str]:
-        # conservative exploration that never crashes: prefer braking then turning only at zero momentum
+        # Intelligent exploration that prioritizes unexplored areas and goal direction
         pos = game['position']
         mom = game['momentum']
         sensors = (game['sensor_data'][:5] + [0]*5)[:5]
+        orientation = game.get('orientation', 0)
+        visited = game.get('visited_cells', set())
+        
+        # Add current position to visited
+        if isinstance(pos, tuple) and len(pos) == 2:
+            visited.add(pos)
 
-        # if front is free and momentum >=0 => move forward (accelerate or hold)
+        # if front is free and momentum >=0 => consider moving forward
         if sensors[2] == 0 and mom >= 0:
-            if mom < 4:
-                return ['F2']
-            else:
-                return ['F1']
+            # Check if front cell leads toward goal or unexplored area
+            front_pos = self._get_position_in_direction(pos, orientation, 0)  # 0° = front
+            if front_pos and (front_pos not in visited or self._is_closer_to_goal(front_pos, pos)):
+                # Choose optimal movement token based on current momentum
+                if mom == 0:
+                    return ['F2']  # Accelerate from rest
+                elif mom < 3:
+                    return ['F2']  # Continue accelerating
+                elif mom == 3:
+                    return ['F2']  # Accelerate to max speed
+                else:  # mom == 4
+                    return ['F1']  # Maintain max speed
 
-        # If front blocked, try to turn to an open side, but ensure momentum = 0
-        # Check right then left then U-turn (right preferred)
+        # If front blocked or not optimal, try to turn to a better direction
         if mom != 0:
             # brake first
             return ['BB']
         
-        # mom == 0, now check for safe turns
-        # Check right side first
-        if sensors[4] == 0:  # Right side is clear
-            return ['R', 'F2']
-        # Check left side
-        if sensors[0] == 0:  # Left side is clear
-            return ['L', 'F2']
+        # mom == 0, now check for intelligent turns
+        # Evaluate all possible directions and choose the best one
+        direction_scores = []
+        
+        # Right side
+        if sensors[4] == 0:
+            right_pos = self._get_position_in_direction(pos, orientation, 90)  # 90° = right
+            if right_pos:
+                score = self._calculate_direction_score(right_pos, visited, pos)
+                direction_scores.append((score, ['R', 'F2']))
+        
+        # Left side
+        if sensors[0] == 0:
+            left_pos = self._get_position_in_direction(pos, orientation, -90)  # -90° = left
+            if left_pos:
+                score = self._calculate_direction_score(left_pos, visited, pos)
+                direction_scores.append((score, ['L', 'F2']))
+        
+        # Choose the direction with the highest score
+        if direction_scores:
+            direction_scores.sort(key=lambda x: x[0], reverse=True)
+            return direction_scores[0][1]
         
         # All sides blocked - just brake and wait
         logger.warning("Exploration: All sides blocked, braking to avoid crash")
         return ['BB']
+    
+    def _get_position_in_direction(self, pos: Tuple[int, int], orientation: int, angle_offset: int) -> Optional[Tuple[int, int]]:
+        """Get the position in a given direction relative to current orientation"""
+        if not isinstance(pos, tuple) or len(pos) != 2:
+            return None
+        
+        x, y = pos
+        absolute_angle = (orientation + angle_offset) % 360
+        
+        if absolute_angle == 0:
+            return (x, y - 1)  # North
+        elif absolute_angle == 90:
+            return (x + 1, y)  # East
+        elif absolute_angle == 180:
+            return (x, y + 1)  # South
+        elif absolute_angle == 270:
+            return (x - 1, y)  # West
+        
+        return None
+    
+    def _calculate_direction_score(self, target_pos: Tuple[int, int], visited: set, current_pos: Tuple[int, int]) -> float:
+        """Calculate a score for a direction based on exploration and goal proximity"""
+        if not (0 <= target_pos[0] <= self.GRID_MAX and 0 <= target_pos[1] <= self.GRID_MAX):
+            return -1000  # Out of bounds
+        
+        score = 0
+        
+        # Bonus for unexplored cells
+        if target_pos not in visited:
+            score += 100
+        
+        # Bonus for moving closer to goal
+        if self._is_closer_to_goal(target_pos, current_pos):
+            score += 50
+        
+        # Distance to goal factor (closer is better)
+        goal_distance = self._heuristic(target_pos, self.GOAL)
+        score += max(0, 20 - goal_distance)  # Max bonus of 20 for being at goal
+        
+        return score
+    
+    def _is_closer_to_goal(self, new_pos: Tuple[int, int], current_pos: Tuple[int, int]) -> bool:
+        """Check if new position is closer to goal than current position"""
+        current_dist = self._heuristic(current_pos, self.GOAL)
+        new_dist = self._heuristic(new_pos, self.GOAL)
+        return new_dist < current_dist
 
     # -------------------------------
     # Maze mapping & helpers
@@ -614,6 +713,10 @@ class MicromouseController:
 
         # Update position from momentum (coarse simulation)
         self._update_position_from_momentum(game)
+        
+        # Track visited cells for intelligent exploration
+        if isinstance(game['position'], tuple) and len(game['position']) == 2:
+            game['visited_cells'].add(game['position'])
 
         # Check goal reached
         if self._is_in_goal_area(game['position']):

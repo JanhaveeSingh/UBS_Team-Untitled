@@ -103,7 +103,7 @@ class FogOfWallGame:
             'scan_results': {},  # Store scan results for each position
             'move_count': 0,
             'game_complete': False,
-            'max_moves': min(grid_size * grid_size, 100),  # Balanced limit for correctness
+            'max_moves': grid_size * grid_size,  # Use full grid size for move limit
             'recent_moves': deque(maxlen=10),  # Track recent moves to prevent loops
             'stuck_count': 0  # Count consecutive moves to same area
         }
@@ -145,14 +145,16 @@ class FogOfWallGame:
             if not isinstance(row, list):
                 continue
             for j, cell in enumerate(row):
-                if cell == 'W':  # Wall found
-                    # Convert relative position to absolute
-                    wall_x = x + (j - 2)  # j-2 because center is at [2][2]
-                    wall_y = y + (i - 2)  # i-2 because center is at [2][2]
-                    
-                    # Check bounds
-                    if 0 <= wall_x < game['grid_size'] and 0 <= wall_y < game['grid_size']:
-                        game['discovered_walls'].add((wall_x, wall_y))
+                # Convert relative position to absolute coordinates
+                scan_x = x + (j - 2)  # j-2 because center is at [2][2]
+                scan_y = y + (i - 2)  # i-2 because center is at [2][2]
+                
+                # Check bounds first
+                if 0 <= scan_x < game['grid_size'] and 0 <= scan_y < game['grid_size']:
+                    if cell == 'W':  # Wall found
+                        game['discovered_walls'].add((scan_x, scan_y))
+                    elif cell == '_':  # Empty cell - mark as explored
+                        game['explored_cells'].add((scan_x, scan_y))
                         
         # Store scan result for this position
         game['scan_results'][(x, y)] = scan_data
@@ -218,10 +220,7 @@ class MazeExplorer:
         # Aggressive submission strategy for better efficiency
         # Submit early if we found all walls or are running out of moves
         if (walls_found >= total_walls or 
-            moves_used >= max_moves * 0.8 or  # Submit at 80% of max moves
-            (walls_found >= total_walls * 0.85 and moves_used >= max_moves * 0.6) or  # Submit at 60% if we found 85% of walls
-            (walls_found >= total_walls * 0.7 and moves_used >= max_moves * 0.7) or  # Submit at 70% if we found 70% of walls
-            (walls_found >= total_walls * 0.5 and moves_used >= max_moves * 0.9)):  # Submit at 90% if we found 50% of walls
+            moves_used >= max_moves):
             logger.info(f"Submitting: walls={walls_found}/{total_walls}, moves={moves_used}/{max_moves}")
             return None, 'submit', None
         
@@ -247,7 +246,7 @@ class MazeExplorer:
                 best_scan_crow = crow_id
                 
         # Only scan if the score is high enough (avoid wasteful scanning)
-        if best_scan_crow and best_scan_score > 5:
+        if best_scan_crow and best_scan_score > 3:
             logger.info(f"Scanning with crow {best_scan_crow} at position {crows[best_scan_crow]} (score: {best_scan_score})")
             return best_scan_crow, 'scan', None
         
@@ -288,8 +287,8 @@ class MazeExplorer:
                     score += 5
                 
                 # Penalty for moving to recently explored areas (unless high value)
-                if (new_x, new_y) in game_state['explored_cells'] and score < 20:
-                    score = 0
+                if (new_x, new_y) in game_state['explored_cells'] and score < 10:
+                    score *= 0.5  # Reduce score but don't eliminate
                 
                 if score > best_score:
                     best_score = score
@@ -343,46 +342,35 @@ class MazeExplorer:
             
         # Check if position is already explored
         if (x, y) in game_state['explored_cells']:
-            return 0
+            return 1  # Small score for re-exploration if needed
             
         # Check if position is a known wall
         if (x, y) in game_state['discovered_walls']:
             return 0
             
         # Base score for unexplored position
-        score = 20  # Higher base score to encourage exploration
+        score = 30
         
-        # Check for nearby unexplored areas (balanced radius for thoroughness)
+        # Check for nearby unexplored areas
         unexplored_nearby = 0
-        for dx in range(-2, 3):  # 5x5 area for better wall discovery
+        for dx in range(-2, 3):
             for dy in range(-2, 3):
                 check_x, check_y = x + dx, y + dy
                 if (0 <= check_x < self.grid_size and 0 <= check_y < self.grid_size):
                     if (check_x, check_y) not in game_state['explored_cells']:
                         unexplored_nearby += 1
         
-        # Score based on nearby unexplored cells
-        score += min(unexplored_nearby, 15)  # Higher cap for better exploration
+        score += unexplored_nearby * 2
         
         # Distance calculation for frontier exploration
         if game_state['explored_cells']:
-            # Use Manhattan distance to nearest explored cell
             min_distance = min(abs(x - ex) + abs(y - ey) 
                              for ex, ey in game_state['explored_cells'])
-            score += min(min_distance, 10)  # Higher bonus for frontier exploration
+            # Bonus for being on the frontier (distance 1-3 from explored)
+            if 1 <= min_distance <= 3:
+                score += 10
         else:
-            # Unexplored area - very high priority
             score += 20
-        
-        # Bonus for positions that could reveal walls in multiple directions
-        wall_potential = 0
-        for dx in range(-1, 2):
-            for dy in range(-1, 2):
-                check_x, check_y = x + dx, y + dy
-                if (0 <= check_x < self.grid_size and 0 <= check_y < self.grid_size):
-                    if (check_x, check_y) not in game_state['explored_cells']:
-                        wall_potential += 1
-        score += min(wall_potential, 8)
         
         return score
         
@@ -405,7 +393,7 @@ class MazeExplorer:
             
         value = 0
         
-        # Quick count of unexplored cells in 5x5 area (optimized)
+        # Count unexplored cells in 5x5 area
         unexplored_count = 0
         for dx in range(-2, 3):
             for dy in range(-2, 3):
@@ -414,14 +402,14 @@ class MazeExplorer:
                     if (check_x, check_y) not in game_state['explored_cells']:
                         unexplored_count += 1
         
-        # Base value on unexplored cells in scan area
-        value += unexplored_count * 3  # Higher multiplier for better wall discovery
+        # Higher value for areas with more unexplored cells
+        value += unexplored_count * 4
         
-        # Wall proximity check for clustering
+        # Bonus for positions near discovered walls (wall clustering)
         if game_state['discovered_walls']:
             wall_proximity = sum(1 for wall_x, wall_y in game_state['discovered_walls']
-                               if abs(x - wall_x) + abs(y - wall_y) <= 4)  # Larger radius for clustering
-            value += wall_proximity * 4  # Higher bonus for wall clustering
+                               if abs(x - wall_x) + abs(y - wall_y) <= 3)
+            value += wall_proximity * 2
             
         return value
         
@@ -640,11 +628,7 @@ def fog_of_wall():
         # Aggressive submission for better efficiency
         should_submit = (
             game_manager.is_game_complete(game_id) or 
-            moves_used >= max_moves or
-            (walls_found >= total_walls * 0.8 and moves_used >= max_moves * 0.7) or  # Submit at 70% if we found 80% of walls
-            (walls_found >= total_walls * 0.7 and moves_used >= max_moves * 0.8) or  # Submit at 80% if we found 70% of walls
-            (walls_found >= total_walls * 0.6 and moves_used >= max_moves * 0.9) or  # Submit at 90% if we found 60% of walls
-            (moves_used >= max_moves * 0.9)  # Hard limit: submit at 90% of max moves
+            moves_used >= max_moves
         )
         
         if should_submit:
@@ -681,7 +665,7 @@ def fog_of_wall():
             
             # Check if algorithm took too long (should be very fast)
             execution_time = time.time() - start_time
-            if execution_time > 0.1:  # If it takes more than 100ms, something's wrong
+            if execution_time > 0.5:  # If it takes more than 500ms, something's wrong
                 logger.warning(f"Algorithm took {execution_time:.3f}s, submitting early")
                 discovered_walls = game_manager.get_discovered_walls(game_id)
                 return jsonify({
