@@ -12,6 +12,20 @@ from collections import deque
 from typing import Dict, List, Tuple, Optional, Any
 from flask import request, jsonify
 
+# Console-like logging for JavaScript-style debugging
+class Console:
+    @staticmethod
+    def info(*args):
+        message = ' '.join(str(arg) for arg in args)
+        print(f"[CONSOLE.INFO] {message}")
+        
+    @staticmethod
+    def log(*args):
+        message = ' '.join(str(arg) for arg in args)
+        print(f"[CONSOLE.LOG] {message}")
+
+console = Console()
+
 try:
     import openai
     openai.api_key = os.environ.get("OPENAI_API_KEY")
@@ -130,31 +144,42 @@ class MicromouseController:
         sensors = game['sensor_data'][:5]  # Ensure 5 sensors
         goal_reached = game.get('goal_reached', False)
         
+        console.info("🧠 STRATEGY INPUT:")
+        console.info(f"  Momentum: {momentum}")
+        console.info(f"  Goal Reached: {goal_reached}")
+        console.info(f"  Sensors: {sensors}")
+        
         logger.info(f"Current state - Momentum: {momentum}, Goal reached: {goal_reached}, Sensors: {sensors}")
         
         # If goal is reached and we have momentum, brake to complete
         if goal_reached and momentum != 0:
+            console.info("🎯 Decision: Goal reached with momentum, braking to complete")
             logger.info("Goal reached with momentum, braking to complete")
             return ['BB']
         
         # If goal is reached and stopped, we're done
         if goal_reached and momentum == 0:
+            console.info("🏆 Decision: Goal reached and stopped!")
             logger.info("Goal reached and stopped!")
             return []
         
         # Safety first - if we have momentum and front wall, brake
         if momentum > 0 and len(sensors) > 2 and sensors[2] == 1:  # Front sensor detects wall
+            console.info("🚨 Decision: Front wall detected with forward momentum, emergency braking")
             logger.info("Front wall detected with forward momentum, braking")
             return ['BB']
         
         # Detect if stuck in loop
         if self._is_stuck_in_loop(game):
+            console.info("🔄 Decision: Loop detected, calling escape strategy")
             return self._escape_loop(game)
         
         # Use AI-enhanced strategy if available, otherwise fall back to wall following
         if OPENAI_AVAILABLE and game.get('total_time_ms', 0) < 250000:  # Use AI for first 250 seconds
+            console.info("🤖 Decision: Using AI-enhanced strategy")
             return self._ai_enhanced_strategy(game)
         else:
+            console.info("🧱 Decision: Using wall-following strategy")
             return self._wall_follow_strategy(game)
 
     def _wall_follow_strategy(self, game: Dict[str, Any]) -> List[str]:
@@ -165,39 +190,51 @@ class MicromouseController:
         # Sensors are: [left(-90°), left-front(-45°), front(0°), right-front(45°), right(90°)]
         left, left_front, front, right_front, right = sensors
         
-        # If we have momentum, we need to be careful about turns
+        # Critical: Handle momentum constraints first
         if momentum > 0:
-            # Only brake if there's an immediate obstacle ahead
+            # If there's a wall ahead, must brake immediately
             if front == 1:
-                logger.info("Wall ahead with momentum, braking")
+                console.info("🚨 Wall Following: Emergency braking due to front wall")
+                logger.info("Wall ahead with forward momentum, emergency braking")
                 return ['BB']
-            # Otherwise continue forward
-            logger.info("Moving forward with momentum")
-            return ['F1']
+            # If no immediate obstacle, can continue but be cautious
+            console.info(f"🏃 Wall Following: Moving forward with momentum {momentum}")
+            logger.info(f"Moving forward with momentum {momentum}")
+            # Use F0 to decelerate if at high speed, F1 to maintain
+            result = ['F0'] if momentum >= 3 else ['F1']
+            console.info(f"✅ Wall Following Output: {result}")
+            return result
         elif momentum < 0:
             # If moving backward, brake to stop
+            console.info("🔄 Wall Following: Braking to stop backward movement")
             logger.info("Moving backward, braking to stop")
             return ['BB']
         
-        # At rest (momentum == 0), apply right-hand rule
-        # Priority 1: Turn right if right wall is clear
-        if right == 0:
+        # At rest (momentum == 0), apply right-hand rule safely
+        # Priority 1: Turn right if right wall is clear and no immediate obstacles
+        if right == 0 and front != 1:  # Right clear and front not blocked
+            console.info("➡️ Wall Following: Right side clear, turning right")
             logger.info("Right side clear, turning right")
             return ['R']
         
         # Priority 2: Go forward if front is clear
         if front == 0:
+            console.info("⬆️ Wall Following: Front clear, moving forward")
             logger.info("Front clear, moving forward")
             return ['F1']
         
         # Priority 3: Turn left if left is clear
         if left == 0:
+            console.info("⬅️ Wall Following: Left side clear, turning left")
             logger.info("Left side clear, turning left")
             return ['L']
         
-        # Priority 4: Turn around (all sides blocked)
-        logger.info("All sides blocked, turning around")
-        return ['R', 'R']
+        # Priority 4: If stuck, just turn right (will eventually find opening)
+        console.info("🔄 Wall Following: All sides blocked, turning right to explore")
+        logger.info("All sides blocked, turning right to explore")
+        result = ['R']
+        console.info(f"✅ Wall Following Output: {result}")
+        return result
 
     def _is_stuck_in_loop(self, game: Dict[str, Any]) -> bool:
         """Detect if mouse is stuck in a repetitive pattern based on sensor readings"""
@@ -227,32 +264,42 @@ class MicromouseController:
         logger.info("Loop detected, attempting escape")
         game['stuck_counter'] = 0  # Reset counter
         
-        # Try AI-powered escape if available
+        momentum = game['momentum']
+        sensors = game['sensor_data'][:5]
+        
+        # If we have momentum, we must handle it first before any rotation
+        if momentum != 0:
+            # If front is blocked, brake
+            if len(sensors) > 2 and sensors[2] == 1:  # Front wall
+                logger.info("Escape: braking due to front wall")
+                return ['BB']
+            # Otherwise continue forward to clear momentum
+            logger.info("Escape: continuing forward to clear momentum")
+            return ['F0']  # Decelerate while moving forward
+        
+        # Only try AI or rotations when at rest (momentum == 0)
         if OPENAI_AVAILABLE:
             try:
-                sensors = game['sensor_data'][:5]
-                momentum = game['momentum']
-                
-                prompt = f"""The micromouse is stuck in a loop. Help it escape!
+                prompt = f"""The micromouse is stuck in a loop and is now at rest (momentum 0). Help it escape!
 
 Current state:
 - Sensors (left, left-front, front, right-front, right): {sensors} (1=wall, 0=clear)
-- Momentum: {momentum}
+- Momentum: {momentum} (at rest)
 - Stuck counter was reset
 
-The mouse has been repeating the same movements. Choose an unconventional but safe move to break the pattern.
-Prefer moves that explore less-visited directions.
+The mouse has been repeating the same movements. Choose a safe move to break the pattern.
+Only use moves valid at momentum 0: F0, F1, F2, V0, V1, V2, BB, L, R
 
-Respond with only a JSON array of 1-2 movement tokens, e.g., ["L"] or ["F2"]"""
+Respond with only a JSON array of 1-2 movement tokens, e.g., ["L"] or ["F1"]"""
 
                 response = openai.chat.completions.create(
                     model="gpt-3.5-turbo",
                     messages=[
-                        {"role": "system", "content": "You are helping a micromouse escape from a stuck loop. Be creative but safe."},
+                        {"role": "system", "content": "You are helping a micromouse escape from a stuck loop. Only suggest moves valid for momentum 0."},
                         {"role": "user", "content": prompt}
                     ],
                     max_tokens=30,
-                    temperature=0.7  # Higher temperature for more creative solutions
+                    temperature=0.7
                 )
                 
                 ai_response = response.choices[0].message.content.strip()
@@ -267,8 +314,7 @@ Respond with only a JSON array of 1-2 movement tokens, e.g., ["L"] or ["F2"]"""
             except Exception as e:
                 logger.info(f"AI escape failed: {e}")
         
-        # Fallback to traditional escape logic
-        sensors = game['sensor_data'][:5]
+        # Fallback to traditional escape logic (only when momentum == 0)
         left, left_front, front, right_front, right = sensors
         
         # Try opposite of normal right-hand rule: prefer left
@@ -279,16 +325,16 @@ Respond with only a JSON array of 1-2 movement tokens, e.g., ["L"] or ["F2"]"""
         # Try going straight if possible
         if front == 0:  # Front clear
             logger.info("Escape: moving forward")
-            return ['F2']  # Use F2 for faster movement
+            return ['F1']
         
         # Try right if available
         if right == 0:  # Right clear
             logger.info("Escape: turning right")
             return ['R']
         
-        # Last resort: turn around
+        # Last resort: turn around (two right turns)
         logger.info("Escape: turning around")
-        return ['R', 'R']
+        return ['R']  # Just one turn for now, will turn again next cycle
 
     def _ai_enhanced_strategy(self, game: Dict[str, Any]) -> List[str]:
         """Use OpenAI to make intelligent navigation decisions"""
@@ -316,24 +362,23 @@ Current state:
 - Total time used: {total_time}ms / 300000ms budget
 - Run number: {run_number}
 
-Valid movement tokens:
-- Longitudinal: F0 (decel), F1 (hold), F2 (accel), BB (brake), V0, V1, V2 (reverse)
-- Rotations: L (left 45°), R (right 45°) - only at momentum 0
-- Moving rotations: F0L, F1R, etc. - only if effective momentum ≤ 1
+CRITICAL MOVEMENT RULES:
+- Rotations (L, R) ONLY allowed when momentum = 0
+- With momentum ≠ 0, you can only use: F0, F1, F2, V0, V1, V2, BB
+- Moving rotations (F0L, F1R, etc.) only if effective momentum ≤ 1
+- If momentum > 0 and front sensor = 1 (wall), you MUST brake (BB)
 
-Rules:
-- Must reach momentum 0 before changing direction
-- Turns only allowed at momentum 0 or with effective momentum ≤ 1
-- Avoid crashes by not hitting walls
-- Use right-hand rule for exploration but optimize for speed
+Available tokens based on current momentum {momentum}:
+{'- ALL tokens available (including L, R)' if momentum == 0 else '- Only longitudinal: F0, F1, F2, V0, V1, V2, BB (NO rotations L/R)'}
 
-Choose 1-3 movement tokens for the next moves. Consider:
-1. Safety (avoid walls)
-2. Exploration efficiency
-3. Speed optimization
-4. Goal seeking
+Safety first: If front wall detected with forward momentum, use BB to brake.
 
-Respond with only a JSON array of movement tokens, e.g., ["F1"] or ["R", "F2"]"""
+Choose 1-3 movement tokens that respect momentum rules. Consider:
+1. SAFETY: Don't crash into walls
+2. MOMENTUM RULES: No L/R unless momentum = 0
+3. Exploration using right-hand rule when safe
+
+Respond with only a JSON array of movement tokens, e.g., ["F1"] or ["BB"]"""
 
             # Call OpenAI API
             response = openai.chat.completions.create(
@@ -348,6 +393,7 @@ Respond with only a JSON array of movement tokens, e.g., ["F1"] or ["R", "F2"]""
             
             # Parse AI response
             ai_response = response.choices[0].message.content.strip()
+            console.info(f"🤖 AI Raw Response: {ai_response}")
             logger.info(f"AI response: {ai_response}")
             
             # Try to parse as JSON
@@ -356,7 +402,21 @@ Respond with only a JSON array of movement tokens, e.g., ["F1"] or ["R", "F2"]""
                 if isinstance(instructions, list) and all(isinstance(token, str) for token in instructions):
                     # Validate tokens are in our valid set
                     valid_instructions = [token for token in instructions if token in self.valid_tokens]
+                    
+                    # Additional validation: check momentum constraints
+                    if momentum != 0:
+                        # Filter out rotations when momentum is not zero
+                        safe_instructions = []
+                        for token in valid_instructions:
+                            if token in ['L', 'R']:  # Pure rotations not allowed with momentum
+                                console.info(f"🚫 Filtered out rotation {token} due to momentum {momentum}")
+                                logger.info(f"Filtered out rotation {token} due to momentum {momentum}")
+                                continue
+                            safe_instructions.append(token)
+                        valid_instructions = safe_instructions
+                    
                     if valid_instructions:
+                        console.info(f"✅ AI Strategy Output: {valid_instructions}")
                         logger.info(f"AI strategy selected: {valid_instructions}")
                         return valid_instructions
             except json.JSONDecodeError:
@@ -411,20 +471,34 @@ def micromouse():
     try:
         payload = request.get_json(force=True)
         if not payload:
+            console.info("❌ ERROR: Empty request body received")
             return jsonify({'error': 'Empty request body'}), 400
             
         game_uuid = payload.get('game_uuid')
         if not game_uuid:
+            console.info("❌ ERROR: Missing game_uuid in request")
             return jsonify({'error': 'Missing game_uuid'}), 400
+
+        # Log detailed input information
+        console.info("🎮 MICROMOUSE INPUT:")
+        console.info(f"  Game UUID: {game_uuid}")
+        console.info(f"  Sensors: {payload.get('sensor_data', 'N/A')}")
+        console.info(f"  Momentum: {payload.get('momentum', 'N/A')}")
+        console.info(f"  Goal Reached: {payload.get('goal_reached', 'N/A')}")
+        console.info(f"  Total Time: {payload.get('total_time_ms', 'N/A')}ms")
+        console.info(f"  Run: {payload.get('run', 'N/A')}")
+        console.info(f"  Full Payload: {payload}")
 
         # Initialize or update game
         if game_uuid not in controller.games:
             logger.info(f"Starting new game {game_uuid}")
+            console.info(f"🆕 Starting new game {game_uuid}")
             # Remove game_uuid from payload to avoid duplicate argument
             init_payload = {k: v for k, v in payload.items() if k != 'game_uuid'}
             controller.start_new_game(game_uuid, **init_payload)
         else:
             logger.info(f"Updating game {game_uuid}")
+            console.info(f"🔄 Updating existing game {game_uuid}")
             controller.update_game_state(game_uuid, payload)
 
         # Generate instructions
@@ -434,6 +508,13 @@ def micromouse():
             'instructions': instructions,
             'end': end_flag
         }
+        
+        # Log detailed output information
+        console.info("🚀 MICROMOUSE OUTPUT:")
+        console.info(f"  Game UUID: {game_uuid}")
+        console.info(f"  Instructions: {instructions}")
+        console.info(f"  End Flag: {end_flag}")
+        console.info(f"  Full Response: {response}")
         
         logger.info(f"Game {game_uuid} -> {response}")
         return jsonify(response)
