@@ -1,6 +1,6 @@
 """
 2048 Game Server Implementation
-Handles the game logic for the 2048 puzzle game.
+Handles the game logic for the 2048 puzzle game with advanced features.
 """
 
 import json
@@ -14,30 +14,54 @@ from routes import app
 logger = logging.getLogger(__name__)
 
 class Game2048:
-    """2048 game logic implementation"""
+    """2048 game logic implementation with advanced features"""
     
     def __init__(self):
         self.grid_size = 4
         
     def is_valid_grid(self, grid: List[List]) -> bool:
-        """Validate that the grid is 4x4 with valid values"""
-        if not isinstance(grid, list) or len(grid) != 4:
+        """Validate that the grid is NxN with valid values"""
+        if not isinstance(grid, list) or len(grid) == 0:
             return False
         
+        grid_size = len(grid)
+        self.grid_size = grid_size  # Update grid size dynamically
+        
         for row in grid:
-            if not isinstance(row, list) or len(row) != 4:
+            if not isinstance(row, list) or len(row) != grid_size:
                 return False
             for cell in row:
-                if cell is not None and (not isinstance(cell, int) or cell < 2 or (cell & (cell - 1)) != 0):
+                if cell is not None and not self.is_valid_cell_value(cell):
                     return False
         return True
     
-    def add_random_tile(self, grid: List[List[Optional[int]]]) -> List[List[Optional[int]]]:
-        """Add a random tile (2 or 4) to an empty cell"""
+    def is_valid_cell_value(self, cell) -> bool:
+        """Check if a cell value is valid"""
+        if cell is None:
+            return True
+        
+        # Handle special tiles for advanced requirements
+        if cell == 0 or cell == '0':
+            return True
+        if cell == '*2' or cell == '×2':
+            return True
+        if cell == 1 or cell == '1':
+            return True
+            
+        # Handle regular number tiles (must be power of 2 and >= 2)
+        if isinstance(cell, int) and cell >= 2 and (cell & (cell - 1)) == 0:
+            return True
+            
+        return False
+    
+    def add_random_tile(self, grid: List[List]) -> List[List]:
+        """Add a random tile to an empty cell"""
+        grid_size = len(grid)
+        
         # Find empty cells
         empty_cells = []
-        for r in range(4):
-            for c in range(4):
+        for r in range(grid_size):
+            for c in range(grid_size):
                 if grid[r][c] is None:
                     empty_cells.append((r, c))
         
@@ -52,12 +76,21 @@ class Game2048:
         
         return grid
     
-    def move_left(self, grid: List[List[Optional[int]]]) -> Tuple[List[List[Optional[int]]], bool]:
-        """Move and merge tiles to the left, return (new_grid, changed)"""
-        new_grid = [[None for _ in range(4)] for _ in range(4)]
+    def has_special_tiles(self, grid: List[List]) -> bool:
+        """Check if grid contains any special tiles"""
+        for row in grid:
+            for cell in row:
+                if cell == 0 or cell == '0' or cell == '*2' or cell == '×2' or cell == 1 or cell == '1':
+                    return True
+        return False
+    
+    def move_left_basic(self, grid: List[List]) -> Tuple[List[List], bool]:
+        """Basic move left for regular 2048 (no special tiles)"""
+        grid_size = len(grid)
+        new_grid = [[None for _ in range(grid_size)] for _ in range(grid_size)]
         changed = False
         
-        for r in range(4):
+        for r in range(grid_size):
             # Collect non-None values from this row
             values = [cell for cell in grid[r] if cell is not None]
             
@@ -74,7 +107,7 @@ class Game2048:
                     i += 1
             
             # Fill the row with merged values and None
-            for c in range(4):
+            for c in range(grid_size):
                 if c < len(merged):
                     new_grid[r][c] = merged[c]
                     if new_grid[r][c] != grid[r][c]:
@@ -86,7 +119,134 @@ class Game2048:
         
         return new_grid, changed
     
-    def move_right(self, grid: List[List[Optional[int]]]) -> Tuple[List[List[Optional[int]]], bool]:
+    def process_row_left_advanced(self, row: List) -> List:
+        """Process a single row moving left with all special tile rules"""
+        # First, handle '0' tiles which act as barriers
+        segments = []
+        current_segment = []
+        
+        for cell in row:
+            if cell == 0 or cell == '0':
+                if current_segment:
+                    segments.append(current_segment)
+                    current_segment = []
+                segments.append([cell])  # '0' as a separate segment
+            else:
+                current_segment.append(cell)
+        
+        if current_segment:
+            segments.append(current_segment)
+        
+        # Process each segment
+        processed_segments = []
+        for segment in segments:
+            if segment == [0] or segment == ['0']:
+                processed_segments.append([0])  # Keep '0' as is
+            else:
+                processed_segments.append(self.process_segment_left(segment))
+        
+        # Reconstruct the row
+        result = []
+        for segment in processed_segments:
+            result.extend(segment)
+        
+        # Pad with None to maintain row length
+        while len(result) < len(row):
+            result.append(None)
+            
+        return result
+    
+    def process_segment_left(self, segment: List) -> List:
+        """Process a segment without '0' tiles"""
+        if not segment:
+            return []
+            
+        # Remove None values first
+        non_none = [cell for cell in segment if cell is not None]
+        if not non_none:
+            return [None] * len(segment)
+        
+        # First pass: handle '1' + '*2' conversions
+        processed = []
+        i = 0
+        while i < len(non_none):
+            current = non_none[i]
+            
+            # Check if current is '1' and next is '*2'
+            if (current == 1 or current == '1') and i + 1 < len(non_none) and non_none[i + 1] == '*2':
+                processed.append(2)  # Convert '1' to 2
+                i += 2  # Skip the '*2'
+            else:
+                processed.append(current)
+                i += 1
+        
+        # Second pass: handle regular merging and '*2' multiplication
+        result = []
+        i = 0
+        while i < len(processed):
+            current = processed[i]
+            
+            if current == '*2' or current == '×2':
+                # If there's a number before this '*2', multiply it
+                if result and isinstance(result[-1], int) and result[-1] >= 2:
+                    result[-1] *= 2
+                    # The '*2' tile is consumed in the process
+                else:
+                    # No number to multiply, keep the '*2'
+                    result.append('*2')
+                i += 1
+            else:
+                # Regular number
+                if i + 1 < len(processed) and (processed[i + 1] == '*2' or processed[i + 1] == '×2'):
+                    # Current number followed by '*2' - multiply current number
+                    if isinstance(current, int):
+                        result.append(current * 2)
+                    else:
+                        result.append(current)
+                    i += 2  # Skip the '*2'
+                elif (result and isinstance(result[-1], int) and 
+                      isinstance(current, int) and result[-1] == current):
+                    # Merge with previous same number
+                    result[-1] = current * 2
+                    i += 1
+                else:
+                    # No merge possible
+                    result.append(current)
+                    i += 1
+        
+        # Pad with None to maintain segment length
+        while len(result) < len(segment):
+            result.append(None)
+            
+        return result
+    
+    def move_left_advanced(self, grid: List[List]) -> Tuple[List[List], bool]:
+        """Advanced move left with special tiles"""
+        grid_size = len(grid)
+        new_grid = [[None for _ in range(grid_size)] for _ in range(grid_size)]
+        changed = False
+        
+        for r in range(grid_size):
+            # Process each row
+            row = grid[r][:]
+            new_row = self.process_row_left_advanced(row)
+            
+            for c in range(grid_size):
+                new_grid[r][c] = new_row[c]
+                if new_grid[r][c] != grid[r][c]:
+                    changed = True
+        
+        return new_grid, changed
+    
+    def move_left(self, grid: List[List]) -> Tuple[List[List], bool]:
+        """Move and merge tiles to the left, return (new_grid, changed)"""
+        # Use basic movement if no special tiles, advanced otherwise
+        if not self.has_special_tiles(grid):
+            return self.move_left_basic(grid)
+        else:
+            return self.move_left_advanced(grid)
+    
+    def move_right(self, grid: List[List]) -> Tuple[List[List], bool]:
         """Move and merge tiles to the right"""
         # Reverse each row, move left, then reverse back
         reversed_grid = [row[::-1] for row in grid]
@@ -94,23 +254,25 @@ class Game2048:
         result_grid = [row[::-1] for row in moved_grid]
         return result_grid, changed
     
-    def move_up(self, grid: List[List[Optional[int]]]) -> Tuple[List[List[Optional[int]]], bool]:
+    def move_up(self, grid: List[List]) -> Tuple[List[List], bool]:
         """Move and merge tiles upward"""
+        grid_size = len(grid)
         # Transpose, move left, then transpose back
-        transposed = [[grid[r][c] for r in range(4)] for c in range(4)]
+        transposed = [[grid[r][c] for r in range(grid_size)] for c in range(grid_size)]
         moved_transposed, changed = self.move_left(transposed)
-        result_grid = [[moved_transposed[c][r] for c in range(4)] for r in range(4)]
+        result_grid = [[moved_transposed[c][r] for c in range(grid_size)] for r in range(grid_size)]
         return result_grid, changed
     
-    def move_down(self, grid: List[List[Optional[int]]]) -> Tuple[List[List[Optional[int]]], bool]:
+    def move_down(self, grid: List[List]) -> Tuple[List[List], bool]:
         """Move and merge tiles downward"""
+        grid_size = len(grid)
         # Transpose, move right, then transpose back
-        transposed = [[grid[r][c] for r in range(4)] for c in range(4)]
+        transposed = [[grid[r][c] for r in range(grid_size)] for c in range(grid_size)]
         moved_transposed, changed = self.move_right(transposed)
-        result_grid = [[moved_transposed[c][r] for c in range(4)] for r in range(4)]
+        result_grid = [[moved_transposed[c][r] for c in range(grid_size)] for r in range(grid_size)]
         return result_grid, changed
     
-    def make_move(self, grid: List[List[Optional[int]]], direction: str) -> Tuple[List[List[Optional[int]]], bool]:
+    def make_move(self, grid: List[List], direction: str) -> Tuple[List[List], bool]:
         """Make a move in the specified direction"""
         direction = direction.upper()
         
@@ -125,36 +287,64 @@ class Game2048:
         else:
             raise ValueError(f"Invalid direction: {direction}")
     
-    def check_win(self, grid: List[List[Optional[int]]]) -> bool:
+    def check_win(self, grid: List[List]) -> bool:
         """Check if the player has won (reached 2048)"""
         for row in grid:
             for cell in row:
-                if cell and cell >= 2048:
+                if isinstance(cell, int) and cell >= 2048:
                     return True
         return False
     
-    def can_move(self, grid: List[List[Optional[int]]]) -> bool:
+    def can_move(self, grid: List[List]) -> bool:
         """Check if any moves are possible"""
+        grid_size = len(grid)
+        
         # Check for empty cells
         for row in grid:
             if None in row:
                 return True
         
         # Check for possible merges horizontally
-        for r in range(4):
-            for c in range(3):
-                if grid[r][c] == grid[r][c + 1]:
+        for r in range(grid_size):
+            for c in range(grid_size - 1):
+                cell1, cell2 = grid[r][c], grid[r][c + 1]
+                if self.can_merge(cell1, cell2):
                     return True
         
         # Check for possible merges vertically
-        for r in range(3):
-            for c in range(4):
-                if grid[r][c] == grid[r + 1][c]:
+        for r in range(grid_size - 1):
+            for c in range(grid_size):
+                cell1, cell2 = grid[r][c], grid[r + 1][c]
+                if self.can_merge(cell1, cell2):
                     return True
         
         return False
     
-    def process_move(self, grid: List[List[Optional[int]]], direction: str) -> Dict[str, Any]:
+    def can_merge(self, cell1, cell2) -> bool:
+        """Check if two cells can merge"""
+        if cell1 is None or cell2 is None:
+            return False
+        
+        # Regular numbers can merge if they're equal and >= 2
+        if (isinstance(cell1, int) and isinstance(cell2, int) and 
+            cell1 == cell2 and cell1 >= 2):
+            return True
+            
+        # '*2' can merge with numbers
+        if (cell1 == '*2' or cell1 == '×2') and isinstance(cell2, int) and cell2 >= 2:
+            return True
+        if (cell2 == '*2' or cell2 == '×2') and isinstance(cell1, int) and cell1 >= 2:
+            return True
+            
+        # '1' can merge with '*2' to become 2
+        if (cell1 == 1 or cell1 == '1') and (cell2 == '*2' or cell2 == '×2'):
+            return True
+        if (cell2 == 1 or cell2 == '1') and (cell1 == '*2' or cell1 == '×2'):
+            return True
+            
+        return False
+    
+    def process_move(self, grid: List[List], direction: str) -> Dict[str, Any]:
         """Process a move and return the result"""
         try:
             # Validate input
@@ -213,8 +403,8 @@ game_2048 = Game2048()
 def game_2048_endpoint():
     """
     2048 game endpoint
-    Expected input: {"grid": 4x4 array, "mergeDirection": "UP"/"DOWN"/"LEFT"/"RIGHT"}
-    Returns: {"nextGrid": 4x4 array, "endGame": null/"win"/"lose"}
+    Expected input: {"grid": NxN array, "mergeDirection": "UP"/"DOWN"/"LEFT"/"RIGHT"}
+    Returns: {"nextGrid": NxN array, "endGame": null/"win"/"lose"}
     """
     # Handle preflight CORS request
     if request.method == 'OPTIONS':
@@ -259,225 +449,4 @@ def game_2048_endpoint():
         response.headers.add('Access-Control-Allow-Origin', '*')
         return response, 500
 
-@app.route('/2048.html', methods=['GET'])
-def serve_2048_html():
-    """Serve the 2048 HTML file for testing"""
-    html_content = '''<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8"/>
-    <title>2048</title>
-    <style>
-        body {
-            font-family: Arial, Helvetica, sans-serif;
-            background: #f0f4f8;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            margin: 0;
-            padding: 0;
-        }
-
-        h1 {
-            margin: 20px 0 10px 0;
-            color: #333;
-        }
-
-        svg {
-            width: 420px;
-            height: 420px;
-            background: #fff;
-            border: 1px solid #ddd;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-        }
-
-        rect {
-            stroke: #bbb;
-            stroke-width: 1;
-        }
-
-        rect:hover {
-            stroke: #777;
-            fill: #777;
-        }
-
-        text {
-            font-size: 30px;
-            fill: #333;
-            text-anchor: middle;
-            dominant-baseline: central;
-        }
-
-        .input-holder {
-            display: flex;
-            align-items: baseline;
-            margin: 8px;
-        }
-
-        input#server-url {
-            field-sizing: content;
-            min-width: 150px;
-        }
-    </style>
-</head>
-<body>
-<h1>2048</h1>
-<div class="input-holder">
-    <div>
-        Logic URL:
-    </div>
-    <div>
-        <input id="server-url" placeholder="https://your-challenge-server-url" value="https://ubs-team-untitled.onrender.com">
-    </div>
-    <div>
-        /2048
-    </div>
-</div>
-<svg viewBox="0 0 400 400" id="gridSvg"></svg>
-<p id="endGameText"></p>
-
-<script>
-    function getEndGameMessage(endGame) {
-        switch(endGame) {
-            case 'win':
-                return 'You WIN! Congratulations!'
-            case 'lose':
-                return 'You LOSE! Press F5 to try again!'
-            case null:
-                return ''
-            default:
-                throw new Error(`Unknown Endgame status ${endGame}`)
-        }
-    }
-    function renderGrid(grid) {
-        const svg = document.getElementById("gridSvg");
-        svg.innerHTML = "";
-
-        const cellSize = 100;
-        for (let r = 0; r < 4; r++) {
-            for (let c = 0; c < 4; c++) {
-                const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
-                g.id = `cell-${r}-${c}`;
-                g.setAttribute(
-                    "transform",
-                    `translate(${c * cellSize},${r * cellSize})`
-                );
-
-                const rect = document.createElementNS(
-                    "http://www.w3.org/2000/svg",
-                    "rect"
-                );
-                rect.setAttribute("width", cellSize);
-                rect.setAttribute("height", cellSize);
-                rect.setAttribute("fill", "#fff");
-
-                const txt = document.createElementNS(
-                    "http://www.w3.org/2000/svg",
-                    "text"
-                );
-                txt.setAttribute("x", cellSize / 2);
-                txt.setAttribute("y", cellSize / 2);
-                txt.textContent = `${grid[r][c] ?? ''}`;
-
-                g.appendChild(rect);
-                g.appendChild(txt);
-                svg.appendChild(g);
-            }
-        }
-    }
-
-    addEventListener("keyup", (event) => {
-        evaluate(event.key);
-    });
-
-    function getGrid() {
-        let grid = [];
-        for (let row = 0; row < 4; row++) {
-            grid.push([
-                parseInt(document.querySelector(`#cell-${row}-0 text`).textContent) || null,
-                parseInt(document.querySelector(`#cell-${row}-1 text`).textContent) || null,
-                parseInt(document.querySelector(`#cell-${row}-2 text`).textContent) || null,
-                parseInt(document.querySelector(`#cell-${row}-3 text`).textContent) || null,
-            ]);
-        }
-        return grid;
-    }
-
-    function getMergeDirection(key) {
-        let mergeDirection = "UP";
-        switch (key) {
-            case "ArrowUp":
-                mergeDirection = "UP";
-                break;
-            case "ArrowDown":
-                mergeDirection = "DOWN";
-                break;
-            case "ArrowLeft":
-                mergeDirection = "LEFT";
-                break;
-            case "ArrowRight":
-                mergeDirection = "RIGHT";
-                break;
-            default:
-                return;
-        }
-        return mergeDirection;
-    }
-
-    function evaluate(key) {
-        const mergeDirection = getMergeDirection(key);
-        if (!mergeDirection) return;
-        const serverUrl = document.getElementById('server-url').value
-
-        fetch(`${serverUrl}/2048`, {
-            method: "POST",
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                "grid": getGrid(),
-                "mergeDirection": mergeDirection,
-            }),
-        })
-            .then((res) => res.json())
-            .then((data) => {
-                renderGrid(data.nextGrid);
-                document.getElementById("endGameText").textContent = getEndGameMessage(data.endGame);
-            })
-            .catch((error) => {
-                window.alert('Error when connecting to logic server! Check log for details')
-                console.error(error)
-            });
-    }
-
-    const initialGrid = [
-        [null, 2, null, null],
-        [null, null, null, null],
-        [null, null, 2, null],
-        [null, null, null, null],
-    ];
-    renderGrid(initialGrid);
-</script>
-</body>
-</html>'''
-    return html_content, 200, {'Content-Type': 'text/html'}
-
-@app.route('/2048/test', methods=['GET'])
-def test_2048():
-    """Test endpoint for 2048 game logic"""
-    test_grid = [
-        [2, 2, None, None],
-        [4, 4, None, None],
-        [None, None, None, None],
-        [None, None, None, None]
-    ]
-    
-    result = game_2048.process_move(test_grid, "LEFT")
-    
-    return jsonify({
-        "test_input": {
-            "grid": test_grid,
-            "direction": "LEFT"
-        },
-        "result": result
-    })
+# Keep the rest of your code unchanged (serve_2048_html and test_2048 functions)
