@@ -830,20 +830,25 @@ def decrypt_railfence(text, rails):
 
 def decrypt_keyword(text, keyword):
     """Keyword substitution cipher decryption"""
-    # Create alphabet with keyword first
-    keyword_chars = []
+    # Create cipher alphabet with keyword first, removing duplicates
+    cipher_alphabet = ""
+    seen = set()
     for char in keyword.upper():
-        if char not in keyword_chars:
-            keyword_chars.append(char)
+        if char.isalpha() and char not in seen:
+            cipher_alphabet += char
+            seen.add(char)
     
-    # Add remaining alphabet characters
-    alphabet = keyword_chars + [chr(i) for i in range(ord('A'), ord('Z') + 1) 
-                             if chr(i) not in keyword_chars]
+    # Add remaining alphabet characters not in keyword
+    for char in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+        if char not in seen:
+            cipher_alphabet += char
     
-    # Create substitution mapping
+    # Create substitution mapping (cipher alphabet maps to normal alphabet)
     substitution = {}
-    for i, char in enumerate(alphabet):
-        substitution[char] = chr(ord('A') + i)
+    normal_alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    for i, cipher_char in enumerate(cipher_alphabet):
+        if i < len(normal_alphabet):
+            substitution[cipher_char] = normal_alphabet[i]
     
     # Decrypt the text
     result = ""
@@ -999,25 +1004,26 @@ def operation_safeguard():
                 if len(word) <= 1:
                     result_words.append(word)
                 else:
-                    # Split back into even and odd parts
-                    even_count = (len(word) + 1) // 2  # Count of even indices
+                    # Calculate how many characters were at even and odd positions originally
+                    original_length = len(word)
+                    even_count = (original_length + 1) // 2  # Number of characters at even indices (0, 2, 4, ...)
+                    odd_count = original_length // 2  # Number of characters at odd indices (1, 3, 5, ...)
+                    
+                    # Split the word back into even and odd parts
                     even_part = word[:even_count]
                     odd_part = word[even_count:]
                     
-                    # Reconstruct original order by interleaving even and odd parts
-                    original = []
-                    even_idx = 0
-                    odd_idx = 0
+                    # Reconstruct original order by interleaving
+                    original = [''] * original_length
                     
-                    for i in range(len(word)):
-                        if i % 2 == 0:  # Even index
-                            if even_idx < len(even_part):
-                                original.append(even_part[even_idx])
-                                even_idx += 1
-                        else:  # Odd index
-                            if odd_idx < len(odd_part):
-                                original.append(odd_part[odd_idx])
-                                odd_idx += 1
+                    # Place even characters back at even indices
+                    for i, char in enumerate(even_part):
+                        original[i * 2] = char
+                    
+                    # Place odd characters back at odd indices
+                    for i, char in enumerate(odd_part):
+                        if i * 2 + 1 < original_length:
+                            original[i * 2 + 1] = char
                     
                     result_words.append(''.join(original))
             return ' '.join(result_words)
@@ -1028,12 +1034,14 @@ def operation_safeguard():
             result = ""
             i = 0
             while i < len(x):
-                result += x[i]
+                current_char = x[i]
+                result += current_char
+                
                 # If current char is a consonant and next char is the same, skip the next
                 if (i + 1 < len(x) and 
                     x[i] == x[i + 1] and 
                     x[i].isalpha() and 
-                    x[i].upper() not in vowels):
+                    x[i] not in vowels):
                     i += 1  # Skip the doubled consonant
                 i += 1
             return result
@@ -1048,7 +1056,7 @@ def operation_safeguard():
         
         # Extract function names from the transformations string
         import re
-        function_matches = re.findall(r'(\w+)\(x\)', transformations_str)
+        function_matches = re.findall(r'(\w+)\s*\(\s*x\s*\)', transformations_str)
         
         # Create mapping of function names to reverse functions
         reverse_functions = {
@@ -1302,20 +1310,25 @@ Example response:
             
             def decrypt_keyword(text, keyword=config.DEFAULT_KEYWORD):
                 """Decrypt keyword substitution cipher using 'SHADOW'"""
-                # Create alphabet with keyword first
-                keyword_chars = []
+                # Create cipher alphabet with keyword first, removing duplicates
+                cipher_alphabet = ""
+                seen = set()
                 for char in keyword.upper():
-                    if char not in keyword_chars:
-                        keyword_chars.append(char)
+                    if char.isalpha() and char not in seen:
+                        cipher_alphabet += char
+                        seen.add(char)
                 
-                # Add remaining alphabet characters
-                alphabet = keyword_chars + [chr(i) for i in range(ord('A'), ord('Z') + 1) 
-                                         if chr(i) not in keyword_chars]
+                # Add remaining alphabet characters not in keyword
+                for char in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+                    if char not in seen:
+                        cipher_alphabet += char
                 
-                # Create substitution mapping
+                # Create substitution mapping (cipher alphabet maps to normal alphabet)
                 substitution = {}
-                for i, char in enumerate(alphabet):
-                    substitution[char] = chr(ord('A') + i)
+                normal_alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                for i, cipher_char in enumerate(cipher_alphabet):
+                    if i < len(normal_alphabet):
+                        substitution[cipher_char] = normal_alphabet[i]
                 
                 # Decrypt the text
                 result = ""
@@ -1377,15 +1390,34 @@ Example response:
                             result += char
                     return result
                 
-                # Try common rotation shifts
+                # Try common rotation shifts, prioritizing ROT13
+                best_result = ""
+                best_score = 0
+                
                 for shift in [13, 1, 3, 5, 7, 9, 11, 15, 17, 19, 21, 23, 25]:
-                    decrypted_text = decrypt_rotation(encrypted_payload, shift)
-                    # Check if the result looks meaningful (contains common words)
-                    if any(word in decrypted_text.upper() for word in ["THE", "AND", "FOR", "ARE", "BUT", "NOT", "YOU", "ALL", "CAN", "HAD", "HER", "WAS", "ONE", "OUR", "OUT", "DAY", "GET", "HAS", "HIM", "HIS", "HOW", "MAN", "NEW", "NOW", "OLD", "SEE", "TWO", "WAY", "WHO", "BOY", "DID", "ITS", "LET", "PUT", "SAY", "SHE", "TOO", "USE"]):
-                        break
-                else:
-                    # If no meaningful result found, use ROT13 as default
-                    decrypted_text = decrypt_rotation(encrypted_payload, 13)
+                    candidate = decrypt_rotation(encrypted_payload, shift)
+                    
+                    # Score based on common English words and patterns
+                    score = 0
+                    upper_candidate = candidate.upper()
+                    
+                    # Check for common English words
+                    common_words = ["THE", "AND", "FOR", "ARE", "BUT", "NOT", "YOU", "ALL", "CAN", "HAD", "HER", "WAS", "ONE", "OUR", "OUT", "DAY", "GET", "HAS", "HIM", "HIS", "HOW", "MAN", "NEW", "NOW", "OLD", "SEE", "TWO", "WAY", "WHO", "BOY", "DID", "ITS", "LET", "PUT", "SAY", "SHE", "TOO", "USE", "ATTACK", "MISSION", "TARGET", "SECURE", "AGENT", "OPERATION", "INTEL", "STATUS", "REPORT", "CONFIRM", "COMPLETE"]
+                    for word in common_words:
+                        if word in upper_candidate:
+                            score += len(word)
+                    
+                    # Check for reasonable letter frequency (E, T, A, O, I, N should be common)
+                    common_letters = "ETAOIN"
+                    for letter in common_letters:
+                        score += upper_candidate.count(letter) * 0.5
+                    
+                    # Prefer results that look more like English
+                    if score > best_score or (score == best_score and shift == 13):
+                        best_result = candidate
+                        best_score = score
+                
+                decrypted_text = best_result if best_result else decrypt_rotation(encrypted_payload, 13)
             else:
                 decrypted_text = f"Unknown cipher type: {cipher_type}"
             
