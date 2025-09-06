@@ -12,13 +12,14 @@ from flask import request, jsonify
 
 logger = logging.getLogger(__name__)
 
-# Import app from the main module
-try:
-    from . import app
-except ImportError:
-    # If running as standalone, create a mock app
-    from flask import Flask
-    app = Flask(__name__)
+import json
+import logging
+
+from flask import request
+
+from routes import app
+
+logger = logging.getLogger(__name__)
 
 class MicromouseController:
     """
