@@ -269,7 +269,9 @@ def micromouse():
         # Initialize or update game
         if game_uuid not in controller.games:
             logger.info(f"Starting new game {game_uuid}")
-            controller.start_new_game(game_uuid, **payload)
+            # Remove game_uuid from payload to avoid duplicate argument
+            init_payload = {k: v for k, v in payload.items() if k != 'game_uuid'}
+            controller.start_new_game(game_uuid, **init_payload)
         else:
             logger.info(f"Updating game {game_uuid}")
             controller.update_game_state(game_uuid, payload)

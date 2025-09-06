@@ -450,6 +450,11 @@ def fog_of_wall():
                 if len(crows_data) > 3:
                     logger.info(f"... and {len(crows_data) - 3} more crows")
                     
+                # Log maze parameters
+                num_walls = test_case.get('num_of_walls', 0)
+                grid_size = test_case.get('length_of_grid', 0)
+                logger.info(f"Maze parameters: {grid_size}x{grid_size} grid with {num_walls} walls")
+                    
                 # Log maze dimensions if available
                 if 'maze_height' in test_case and 'maze_width' in test_case:
                     logger.info(f"Maze dimensions: {test_case['maze_width']} x {test_case['maze_height']}")
@@ -462,18 +467,37 @@ def fog_of_wall():
             logger.info(f"Previous action keys: {list(prev_action.keys()) if isinstance(prev_action, dict) else 'Not a dict'}")
             
             if isinstance(prev_action, dict):
-                action_type = prev_action.get('action_type')
+                # Try multiple field names for action type
+                action_type = (prev_action.get('your_action') or 
+                              prev_action.get('action_type') or
+                              prev_action.get('type'))
                 logger.info(f"Action type: {action_type}")
                 
-                if action_type == 'scan':
-                    scan_result = prev_action.get('scan_result', {})
-                    walls = scan_result.get('walls', [])
-                    logger.info(f"Scan result - {len(walls)} walls found")
-                    logger.info(f"Sample walls: {walls[:5] if walls else 'None'}")
+                # Log scan result details
+                if 'scan_result' in prev_action and prev_action['scan_result']:
+                    scan_result = prev_action['scan_result']
+                    logger.info(f"SCAN RESULT RECEIVED:")
+                    logger.info(f"Scan result type: {type(scan_result)}")
+                    if isinstance(scan_result, list):
+                        logger.info(f"Scan grid size: {len(scan_result)}x{len(scan_result[0]) if scan_result else 0}")
+                        # Log the actual scan grid
+                        for i, row in enumerate(scan_result):
+                            logger.info(f"Scan row {i}: {row}")
+                        
+                        # Count walls found
+                        wall_count = sum(row.count('W') for row in scan_result if isinstance(row, list))
+                        logger.info(f"Total walls found in scan: {wall_count}")
                 
-                elif action_type == 'move':
-                    move_result = prev_action.get('move_result', {})
+                # Log move result details  
+                if 'move_result' in prev_action and prev_action['move_result']:
+                    move_result = prev_action['move_result']
+                    logger.info(f"MOVE RESULT RECEIVED:")
                     logger.info(f"Move result: {move_result}")
+                    logger.info(f"Move result type: {type(move_result)}")
+                
+                # Log crow_id
+                crow_id = prev_action.get('crow_id')
+                logger.info(f"Crow ID in action: {crow_id}")
         
         logger.info("-" * 80)
         
@@ -535,11 +559,30 @@ def fog_of_wall():
         if not previous_action:
             return jsonify({'error': 'Invalid request: must provide either test_case or previous_action'}), 400
             
-        action_type = previous_action.get('your_action')
+        # Try different field names for action type
+        action_type = (previous_action.get('your_action') or 
+                      previous_action.get('action_type') or
+                      previous_action.get('type'))
         crow_id = previous_action.get('crow_id')
         
-        if not action_type or not crow_id:
-            return jsonify({'error': 'Missing action_type or crow_id in previous_action'}), 400
+        # If no action type found, try to infer from available data
+        if not action_type:
+            if 'scan_result' in previous_action and previous_action['scan_result']:
+                action_type = 'scan'
+                logger.info(f"Inferred action_type='scan' from scan_result presence")
+            elif 'move_result' in previous_action and previous_action['move_result']:
+                action_type = 'move'
+                logger.info(f"Inferred action_type='move' from move_result presence")
+        
+        if not crow_id:
+            return jsonify({'error': 'Missing crow_id in previous_action'}), 400
+            
+        # Log the extracted action details for debugging
+        logger.info(f"Extracted action - Type: {action_type}, Crow: {crow_id}")
+        
+        if not action_type:
+            logger.warning(f"Could not determine action_type, treating as no-op")
+            # Continue without processing results but generate next action
             
         # Check if game exists
         if game_id not in game_manager.games:
@@ -560,6 +603,7 @@ def fog_of_wall():
                 if (new_x is not None and new_y is not None and 
                     isinstance(new_x, (int, float)) and isinstance(new_y, (int, float))):
                     game_manager.update_crow_position(game_id, crow_id, int(new_x), int(new_y))
+                    logger.info(f"Updated crow {crow_id} position to ({new_x}, {new_y})")
                     
         elif action_type == 'scan':
             scan_result = previous_action.get('scan_result')
@@ -567,6 +611,13 @@ def fog_of_wall():
             if (crow_pos and scan_result and isinstance(scan_result, list) and
                 len(scan_result) == 5 and all(isinstance(row, list) and len(row) == 5 for row in scan_result)):
                 game_manager.add_scan_result(game_id, crow_id, crow_pos['x'], crow_pos['y'], scan_result)
+                logger.info(f"Processed scan result for crow {crow_id} at ({crow_pos['x']}, {crow_pos['y']})")
+                
+                # Log scan result details for training
+                walls_in_scan = sum(row.count('W') for row in scan_result)
+                logger.info(f"Scan found {walls_in_scan} walls in 5x5 area")
+        else:
+            logger.info(f"Unknown or missing action_type: {action_type}, skipping result processing")
                 
         # Check if game is complete or move limit reached
         game_state = game_manager.games[game_id]

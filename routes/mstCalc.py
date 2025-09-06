@@ -150,35 +150,46 @@ def test_mst_algorithm():
 
 # Enhanced vision system prompt for better accuracy
 ENHANCED_VISION_PROMPT = """
-You are a precise graph analysis expert. The image shows an undirected weighted graph:
+You are analyzing an undirected weighted graph image. Be EXTREMELY CAREFUL and PRECISE.
 
-- BLACK CIRCLES = nodes (vertices)
-- COLORED LINES = edges connecting nodes
-- NUMBERS on edges = weights (same color as the edge)
+GRAPH COMPONENTS:
+- BLACK FILLED CIRCLES = nodes (vertices)
+- COLORED LINES/CURVES = edges connecting nodes  
+- NUMBERS on edges = weights (text color matches edge color)
 
-CRITICAL INSTRUCTIONS:
-1. Find ALL black circular nodes
-2. Number nodes by position:
-   - Sort by Y-coordinate (top to bottom) FIRST
-   - Then by X-coordinate (left to right)
-   - Start numbering from 0
+STEP-BY-STEP PROCESS:
 
-3. For each colored line:
-   - Identify which 2 nodes it connects
-   - Read the weight number on the line
-   - Weight has same color as the line
+1. NODE IDENTIFICATION:
+   - Find EVERY black filled circle
+   - Ignore any other shapes or markings
+   - Count them carefully (typical range: 3-8 nodes)
 
-4. Count total nodes carefully
-5. List each edge exactly once
+2. NODE NUMBERING (CRITICAL):
+   - Sort nodes by Y-coordinate FIRST (top-to-bottom)
+   - For nodes at same Y-level, sort by X-coordinate (left-to-right)
+   - Number starting from 0
+   - Double-check your numbering!
 
-RETURN ONLY JSON:
+3. EDGE IDENTIFICATION:
+   - Find every colored line/curve connecting two nodes
+   - Each edge connects exactly 2 nodes
+   - Read the weight number on each edge
+   - Weight text color matches the edge color
+   - If you see the same two nodes connected multiple times, choose the clearest weight
+
+4. VALIDATION:
+   - Each edge should appear exactly once
+   - No duplicate edges between same node pairs
+   - All node IDs should be in range [0, nodes-1]
+   - Typical edge count: (nodes-1) to (nodes*(nodes-1)/2)
+
+RETURN ONLY THIS JSON FORMAT:
 {
-  "nodes": <total_count>,
-  "edges": [{"u": <from_node_id>, "v": <to_node_id>, "w": <weight>}, ...]
+  "nodes": <total_node_count>,
+  "edges": [{"u": <node1_id>, "v": <node2_id>, "w": <weight_number>}, ...]
 }
 
-NO markdown, NO explanation, ONLY the JSON object.
-Be very careful with node numbering - Y first, then X!
+CRITICAL: NO markdown formatting, NO explanation text, NO code blocks - ONLY the raw JSON object!
 """
 
 def call_openai_extract_v2(img_b64: str) -> Dict[str, Any]:
@@ -193,7 +204,7 @@ def call_openai_extract_v2(img_b64: str) -> Dict[str, Any]:
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": "Analyze this graph image. Extract nodes and edges with weights. Return ONLY the JSON object."},
+                    {"type": "text", "text": "Analyze this weighted graph image step by step:\n1. Count all black circular nodes\n2. Number nodes by Y-coordinate first (top to bottom), then X-coordinate (left to right)\n3. Find all colored edges and read their weights carefully\n4. Return ONLY the JSON object with no extra formatting"},
                     {
                         "type": "image_url",
                         "image_url": {"url": f"data:image/png;base64,{img_b64}"},
@@ -231,8 +242,60 @@ def call_openai_extract_v2(img_b64: str) -> Dict[str, Any]:
     if "nodes" not in data or "edges" not in data:
         raise ValueError("Missing 'nodes' or 'edges' in model output.")
     
-    edges = [(int(e["u"]), int(e["v"]), int(e["w"])) for e in data["edges"]]
-    return {"nodes": int(data["nodes"]), "edges": edges}
+    # Process and validate edges
+    num_nodes = int(data["nodes"])
+    raw_edges = data["edges"]
+    
+    # Validate and clean edges
+    edge_dict = {}  # (u,v) -> weight, to handle duplicates
+    invalid_edges = 0
+    
+    for e in raw_edges:
+        try:
+            u, v, w = int(e["u"]), int(e["v"]), int(e["w"])
+            
+            # Validate node indices
+            if u < 0 or u >= num_nodes or v < 0 or v >= num_nodes:
+                logger.warning(f"Invalid edge: nodes {u},{v} out of range [0,{num_nodes-1}]")
+                invalid_edges += 1
+                continue
+            
+            # Skip self-loops
+            if u == v:
+                logger.warning(f"Skipping self-loop: {u} -> {u}")
+                invalid_edges += 1
+                continue
+            
+            # Normalize edge (smaller node first)
+            edge_key = (min(u, v), max(u, v))
+            
+            # Handle duplicates - keep the one with smaller weight (more conservative)
+            if edge_key in edge_dict:
+                logger.warning(f"Duplicate edge {edge_key}: weights {edge_dict[edge_key]} vs {w}, keeping smaller")
+                edge_dict[edge_key] = min(edge_dict[edge_key], w)
+            else:
+                edge_dict[edge_key] = w
+                
+        except (KeyError, ValueError, TypeError) as e:
+            logger.warning(f"Invalid edge format: {e}")
+            invalid_edges += 1
+            continue
+    
+    # Convert back to list format
+    edges = [(u, v, w) for (u, v), w in edge_dict.items()]
+    
+    logger.info(f"Edge validation: {len(raw_edges)} raw -> {len(edges)} valid ({invalid_edges} invalid)")
+    
+    # Sanity check: reasonable edge count for graph connectivity
+    min_edges = num_nodes - 1  # minimum for connected graph
+    max_edges = num_nodes * (num_nodes - 1) // 2  # complete graph
+    
+    if len(edges) < min_edges:
+        logger.warning(f"Too few edges ({len(edges)}) for {num_nodes} nodes - graph may be disconnected")
+    elif len(edges) > max_edges:
+        logger.warning(f"Too many edges ({len(edges)}) for {num_nodes} nodes - maximum is {max_edges}")
+    
+    return {"nodes": num_nodes, "edges": edges}
 
 def fallback_mst_estimation(img_b64: str) -> int:
     """Fallback MST estimation when OpenAI is not available."""
