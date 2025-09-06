@@ -6,6 +6,8 @@ sequences per the provided micromouse spec and logs inputs/errors for debugging.
 
 import logging
 import traceback
+import math
+from collections import deque
 from typing import Dict, List, Tuple, Optional, Any
 from flask import request, jsonify
 
@@ -93,7 +95,11 @@ class MicromouseController:
             'path_to_goal': [],
             'current_run_started': False,
             'time_budget': self.TIME_BUDGET,
-            'thinking_time': self.THINKING_TIME_MS
+            'thinking_time': self.THINKING_TIME_MS,
+            'recent_actions': deque(maxlen=10),  # Track recent actions for loop detection
+            'stuck_counter': 0,  # Count how many times we've been stuck
+            'last_position': position,  # Track position changes
+            'position_stuck_count': 0  # Count how many moves without position change
         }
         logger.info("Started new micromouse game %s (pos=%s orient=%s m=%s)", game_uuid, position, orientation, momentum)
 
@@ -143,36 +149,54 @@ class MicromouseController:
         # update map from sensors
         self._update_maze_map(game, pos, orient, sensors)
 
+        # Check for stuck situations and loops
+        loop_instructions = self._detect_and_handle_loops(game)
+        if loop_instructions:
+            logger.info("Loop detected, using escape strategy: %s", loop_instructions)
+            self._record_action(game, loop_instructions)
+            return loop_instructions
+
         # Enhanced safety checks - prevent any movement into detected walls
-        # If we have any momentum and there's a wall in our path, brake immediately
         if momentum != 0:
-            # Check if we're about to hit a wall based on our current momentum direction
             if momentum > 0:  # Moving forward
                 if sensors[2] == 1:  # Front wall detected
                     logger.warning("Front wall detected with forward momentum %s, emergency brake", momentum)
+                    self._record_action(game, ['BB'])
                     return ['BB']
             elif momentum < 0:  # Moving backward (rare but possible)
-                # For backward momentum, we'd need to check behind us, but sensors face forward
-                # Just brake to be safe
                 logger.warning("Backward momentum detected, emergency brake for safety")
+                self._record_action(game, ['BB'])
                 return ['BB']
-
-        # First check if we're completely blocked by walls
-        # Check if front is blocked and we have momentum (would crash)
-        if sensors[2] == 1 and momentum > 0:
-            logger.warning("Front wall detected with forward momentum, braking to avoid crash")
-            return ['BB']
-        
-        # Check if all main directions are blocked
-        if sensors[0] == 1 and sensors[2] == 1 and sensors[4] == 1:
-            # All three main directions blocked - just brake
-            logger.warning("All main directions blocked, braking to avoid crash")
-            return ['BB']
 
         # Check if we're in goal area but still moving - need to brake
         if self._is_in_goal_area(pos) and momentum > 0:
             logger.info("In goal area with momentum %s, braking to complete goal", momentum)
+            self._record_action(game, ['BB'])
             return ['BB']
+
+        # Check if completely blocked by walls
+        if sensors[0] == 1 and sensors[2] == 1 and sensors[4] == 1:
+            logger.warning("All main directions blocked")
+            # If stuck, try to do a U-turn sequence
+            if momentum == 0:
+                if game.get('stuck_counter', 0) < 3:
+                    game['stuck_counter'] = game.get('stuck_counter', 0) + 1
+                    # Try different escape strategies
+                    if game['stuck_counter'] == 1:
+                        self._record_action(game, ['R', 'R'])  # 180 degree turn
+                        return ['R', 'R']
+                    elif game['stuck_counter'] == 2:
+                        self._record_action(game, ['L', 'L'])  # Try other direction
+                        return ['L', 'L']
+                    else:
+                        self._record_action(game, ['BB'])
+                        return ['BB']  # Give up and brake
+                else:
+                    self._record_action(game, ['BB'])
+                    return ['BB']
+            else:
+                self._record_action(game, ['BB'])
+                return ['BB']
         
         # Try to find path to goal
         path = self._find_path_to_goal(game)
@@ -211,7 +235,94 @@ class MicromouseController:
             else:
                 safe_instructions.append(instr)
         
-        return safe_instructions[:5]
+        # Record the action and return
+        final_instructions = safe_instructions[:5]
+        self._record_action(game, final_instructions)
+        return final_instructions
+
+    def _detect_and_handle_loops(self, game: Dict[str, Any]) -> Optional[List[str]]:
+        """Detect if we're stuck in a loop and handle it"""
+        recent_actions = game.get('recent_actions', deque())
+        position = game['position']
+        last_position = game.get('last_position', position)
+        
+        # Check if position hasn't changed
+        if position == last_position:
+            game['position_stuck_count'] = game.get('position_stuck_count', 0) + 1
+        else:
+            game['position_stuck_count'] = 0
+            game['stuck_counter'] = 0  # Reset stuck counter when we move
+        
+        # If stuck in same position for too many moves
+        if game.get('position_stuck_count', 0) >= 3:
+            logger.warning("Stuck in same position for %d moves, executing escape", game['position_stuck_count'])
+            game['stuck_counter'] = game.get('stuck_counter', 0) + 1
+            
+            # Different escape strategies based on how many times we've been stuck
+            if game['stuck_counter'] == 1:
+                return ['R', 'R']  # 180 turn
+            elif game['stuck_counter'] == 2:
+                return ['L', 'L']  # Try other direction
+            elif game['stuck_counter'] == 3:
+                return ['BB']  # Emergency brake
+            else:
+                # Reset everything and try random direction
+                game['stuck_counter'] = 0
+                game['position_stuck_count'] = 0
+                return ['R']
+        
+        # Check for repeating action patterns
+        if len(recent_actions) >= 6:
+            # Look for repeating patterns
+            last_3 = list(recent_actions)[-3:]
+            prev_3 = list(recent_actions)[-6:-3]
+            
+            if last_3 == prev_3:
+                logger.warning("Detected repeating action pattern: %s", last_3)
+                game['stuck_counter'] = game.get('stuck_counter', 0) + 1
+                
+                # Force a different action to break the loop
+                if game['stuck_counter'] % 2 == 1:
+                    return ['L', 'F2']  # Turn left and move
+                else:
+                    return ['R', 'F2']  # Turn right and move
+        
+        # Update last position
+        game['last_position'] = position
+        return None  # No loop detected
+        
+        # If stuck in same position for too long, force a different strategy
+        if game['position_stuck_count'] > 5:
+            logger.warning("Stuck in same position for %d moves, forcing escape", game['position_stuck_count'])
+            game['stuck_counter'] = game.get('stuck_counter', 0) + 1
+            return True
+            
+        # Check for repeated action patterns
+        if len(recent_actions) >= 6:
+            # Check if last 3 actions are the same as 3 before that
+            last_3 = list(recent_actions)[-3:]
+            prev_3 = list(recent_actions)[-6:-3]
+            if last_3 == prev_3:
+                logger.warning("Detected repeated action pattern: %s", last_3)
+                game['stuck_counter'] = game.get('stuck_counter', 0) + 1
+                return True
+                
+        # Check for brake loops (multiple BB in sequence)
+        if len(recent_actions) >= 3:
+            recent_list = list(recent_actions)[-3:]
+            if all(['BB' in action for action in recent_list]):
+                logger.warning("Detected brake loop, need different strategy")
+                game['stuck_counter'] = game.get('stuck_counter', 0) + 1
+                return True
+        
+        game['last_position'] = position
+        return False
+    
+    def _record_action(self, game: Dict[str, Any], action: List[str]):
+        """Record an action for loop detection"""
+        if 'recent_actions' not in game:
+            game['recent_actions'] = deque(maxlen=10)
+        game['recent_actions'].append(str(action))
 
     # Build legal tokens from path respecting momentum/rotation rules
     def _path_to_legal_instructions(self, game: Dict[str, Any], path: List[Tuple[int, int]]) -> List[str]:
@@ -299,12 +410,12 @@ class MicromouseController:
                 # Check if there are walls that would block the moving rotation
                 wall_blocking = False
                 if rot == 90:  # Right turn
-                    # Check right sensor and right-front sensor
-                    if sensors[4] == 1 or sensors[3] == 1:
+                    # Only check right sensor for turn blocking
+                    if sensors[4] == 1:
                         wall_blocking = True
                 elif rot == 270:  # Left turn
-                    # Check left sensor and left-front sensor
-                    if sensors[0] == 1 or sensors[1] == 1:
+                    # Only check left sensor for turn blocking
+                    if sensors[0] == 1:
                         wall_blocking = True
                 
                 # moving-rotation possible only if m_eff <= 1 AND we have very low momentum AND no walls blocking
@@ -416,16 +527,14 @@ class MicromouseController:
             if tok in ('F0R', 'F1R', 'F2R', 'F0L', 'F1L', 'F2L'):
                 # Extract the rotation direction
                 if tok.endswith('R'):
-                    # Right turn - check for walls in the path of the moving rotation
-                    # Check both the right sensor and the right-front sensor (diagonal)
-                    if sensors[4] or sensors[3]:  # Right sensor or right-front sensor detects wall
-                        logger.warning("Real-time safety: right/right-front wall detected; blocking moving rotation %s", tok)
+                    # Right turn - only check if the right side is blocked for the turn itself
+                    if sensors[4]:  # Right sensor detects wall - can't turn right
+                        logger.warning("Real-time safety: right wall detected; blocking moving rotation %s", tok)
                         return ['BB']
                 elif tok.endswith('L'):
-                    # Left turn - check for walls in the path of the moving rotation
-                    # Check both the left sensor and the left-front sensor (diagonal)
-                    if sensors[0] or sensors[1]:  # Left sensor or left-front sensor detects wall
-                        logger.warning("Real-time safety: left/left-front wall detected; blocking moving rotation %s", tok)
+                    # Left turn - only check if the left side is blocked for the turn itself
+                    if sensors[0]:  # Left sensor detects wall - can't turn left
+                        logger.warning("Real-time safety: left wall detected; blocking moving rotation %s", tok)
                         return ['BB']
             
             # If about to go forward (first forward token), but front sensor sees a wall, block
@@ -437,11 +546,11 @@ class MicromouseController:
             # If sequence starts with rotation then forward, and side sensor reports wall, block
             if i == 1 and tok.startswith('F') and len(out) >= 1 and out[0] in ('L', 'R'):
                 turn = out[0]
-                if turn == 'L' and (sensors[0] or sensors[1]):  # Left turn but left/left-front sensors see wall
-                    logger.warning("Real-time safety: left wall would block forward after left turn -> blocking")
+                if turn == 'L' and sensors[0]:  # Left turn - only check left sensor, not left-front
+                    logger.warning("Real-time safety: left wall would block turn -> blocking")
                     return ['BB']
-                if turn == 'R' and (sensors[4] or sensors[3]):  # Right turn but right/right-front sensors see wall
-                    logger.warning("Real-time safety: right wall would block forward after right turn -> blocking")
+                if turn == 'R' and sensors[4]:  # Right turn - only check right sensor, not right-front
+                    logger.warning("Real-time safety: right wall would block turn -> blocking")
                     return ['BB']
             
             # Additional safety: if we have high momentum and front wall, brake immediately
@@ -464,49 +573,112 @@ class MicromouseController:
         sensors = (game['sensor_data'][:5] + [0]*5)[:5]
         orientation = game.get('orientation', 0)
         visited = game.get('visited_cells', set())
+        stuck_counter = game.get('stuck_counter', 0)
         
         # Add current position to visited
         if isinstance(pos, tuple) and len(pos) == 2:
             visited.add(pos)
 
+        # If we've been stuck, try more aggressive exploration
+        if stuck_counter > 0:
+            logger.info("Using aggressive exploration due to stuck counter: %d", stuck_counter)
+            # Force different directions based on stuck counter
+            if mom != 0:
+                self._record_action(game, ['BB'])
+                return ['BB']
+            
+            # Try directions in different order when stuck
+            direction_priority = []
+            if stuck_counter % 4 == 1:  # Try North first
+                direction_priority = [('N', 0), ('S', 180), ('E', 90), ('W', 270)]
+            elif stuck_counter % 4 == 2:  # Try South first
+                direction_priority = [('S', 180), ('N', 0), ('W', 270), ('E', 90)]
+            elif stuck_counter % 4 == 3:  # Try East first
+                direction_priority = [('E', 90), ('W', 270), ('N', 0), ('S', 180)]
+            else:  # Try West first
+                direction_priority = [('W', 270), ('E', 90), ('S', 180), ('N', 0)]
+            
+            for direction_name, target_angle in direction_priority:
+                # Calculate which sensor to check
+                sensor_angle = (target_angle - orientation) % 360
+                if sensor_angle == 0:  # Front
+                    sensor_idx = 2
+                elif sensor_angle == 90 or sensor_angle == -270:  # Right
+                    sensor_idx = 4
+                elif sensor_angle == 270 or sensor_angle == -90:  # Left
+                    sensor_idx = 0
+                elif sensor_angle == 180:  # Back - can't detect directly
+                    continue
+                else:
+                    continue
+                
+                if sensors[sensor_idx] == 0:  # Path is clear
+                    # Calculate required rotation
+                    rotation_needed = (target_angle - orientation) % 360
+                    if rotation_needed == 0:
+                        instructions = ['F2']
+                    elif rotation_needed == 90:
+                        instructions = ['R', 'F2']
+                    elif rotation_needed == 270:
+                        instructions = ['L', 'F2']
+                    elif rotation_needed == 180:
+                        instructions = ['R', 'R']  # U-turn
+                    else:
+                        continue
+                    
+                    self._record_action(game, instructions)
+                    return instructions
+            
+            # If all directions blocked, try a random escape
+            if sensors[4] == 0:
+                self._record_action(game, ['R'])
+                return ['R']
+            elif sensors[0] == 0:
+                self._record_action(game, ['L'])
+                return ['L']
+            else:
+                self._record_action(game, ['BB'])
+                return ['BB']
+
+        # Normal exploration when not stuck
         # if front is free and momentum >=0 => consider moving forward
         if sensors[2] == 0 and mom >= 0:
-            # Additional safety: also check diagonal sensors to avoid corner collisions
-            # Only move forward if both front and diagonal sensors are clear, or if we're already committed
-            front_safe = sensors[2] == 0 and (sensors[1] == 0 or sensors[3] == 0)  # Front and at least one diagonal clear
-            
+            # Front is clear, no diagonal check needed - let the robot move
             # Check if front cell leads toward goal or unexplored area
             front_pos = self._get_position_in_direction(pos, orientation, 0)  # 0° = front
-            if front_pos and front_safe and (front_pos not in visited or self._is_closer_to_goal(front_pos, pos)):
+            if front_pos and (front_pos not in visited or self._is_closer_to_goal(front_pos, pos)):
                 # Choose optimal movement token based on current momentum
                 if mom == 0:
-                    return ['F2']  # Accelerate from rest
+                    instructions = ['F2']
                 elif mom < 3:
-                    return ['F2']  # Continue accelerating
+                    instructions = ['F2']
                 elif mom == 3:
-                    return ['F2']  # Accelerate to max speed
+                    instructions = ['F2']
                 else:  # mom == 4
-                    return ['F1']  # Maintain max speed
+                    instructions = ['F1']
+                
+                self._record_action(game, instructions)
+                return instructions
 
         # If front blocked or not optimal, try to turn to a better direction
         if mom != 0:
             # brake first
+            self._record_action(game, ['BB'])
             return ['BB']
         
         # mom == 0, now check for intelligent turns
-        # Evaluate all possible directions and choose the best one
         direction_scores = []
         
-        # Right side - check both right and right-front sensors for safety
-        if sensors[4] == 0 and sensors[3] == 0:  # Both right and right-front are clear
-            right_pos = self._get_position_in_direction(pos, orientation, 90)  # 90° = right
+        # Right side - only check right sensor for the turn
+        if sensors[4] == 0:
+            right_pos = self._get_position_in_direction(pos, orientation, 90)
             if right_pos:
                 score = self._calculate_direction_score(right_pos, visited, pos)
                 direction_scores.append((score, ['R', 'F2']))
         
-        # Left side - check both left and left-front sensors for safety
-        if sensors[0] == 0 and sensors[1] == 0:  # Both left and left-front are clear
-            left_pos = self._get_position_in_direction(pos, orientation, -90)  # -90° = left
+        # Left side - only check left sensor for the turn
+        if sensors[0] == 0:
+            left_pos = self._get_position_in_direction(pos, orientation, -90)
             if left_pos:
                 score = self._calculate_direction_score(left_pos, visited, pos)
                 direction_scores.append((score, ['L', 'F2']))
@@ -514,19 +686,23 @@ class MicromouseController:
         # Choose the direction with the highest score
         if direction_scores:
             direction_scores.sort(key=lambda x: x[0], reverse=True)
-            return direction_scores[0][1]
+            instructions = direction_scores[0][1]
+            self._record_action(game, instructions)
+            return instructions
         
-        # If no side directions are available, consider a U-turn (180 degree turn)
-        # This requires two 90-degree turns
+        # If no side directions are available, try U-turn
         if sensors[2] == 1:  # Front is blocked, need to turn around
-            # Check if we can do a right-right turn (safer than left-left usually)
             if sensors[4] == 0:  # Right side is clear for first turn
-                return ['R']  # Start the U-turn with a right turn
+                self._record_action(game, ['R'])
+                return ['R']
             elif sensors[0] == 0:  # Left side is clear for first turn
-                return ['L']  # Start the U-turn with a left turn
+                self._record_action(game, ['L'])
+                return ['L']
         
-        # All sides blocked - just brake and wait
-        logger.warning("Exploration: All sides blocked, braking to avoid crash")
+        # All sides blocked - brake and increment stuck counter
+        logger.warning("Exploration: All sides blocked, braking")
+        game['stuck_counter'] = game.get('stuck_counter', 0) + 1
+        self._record_action(game, ['BB'])
         return ['BB']
     
     def _get_position_in_direction(self, pos: Tuple[int, int], orientation: int, angle_offset: int) -> Optional[Tuple[int, int]]:

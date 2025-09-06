@@ -51,48 +51,21 @@ class FogOfWallGame:
             
         # Safely process crows, filtering out None values
         crows = {}
-        for i, crow in enumerate(crows_data):
-            if crow is None:
-                logger.warning(f"Skipping None crow at index {i} in game {game_id}")
-                continue
-            if not isinstance(crow, dict):
-                logger.warning(f"Skipping invalid crow at index {i} in game {game_id}: {type(crow)}")
-                continue
-            if 'id' not in crow or 'x' not in crow or 'y' not in crow:
-                logger.warning(f"Skipping crow at index {i} in game {game_id} missing required fields: {crow}")
-                continue
-            try:
-                x, y = int(crow['x']), int(crow['y'])
-                crows[crow['id']] = {'x': x, 'y': y}
-            except (ValueError, TypeError) as e:
-                logger.warning(f"Skipping crow at index {i} in game {game_id} with invalid coordinates: {e}")
-                continue
+        for crow in crows_data:
+            if (crow and isinstance(crow, dict) and 
+                'id' in crow and 'x' in crow and 'y' in crow):
+                try:
+                    x, y = int(crow['x']), int(crow['y'])
+                    crows[crow['id']] = {'x': x, 'y': y}
+                except (ValueError, TypeError):
+                    continue
         
         if not crows:
-            logger.error(f"No valid crows found in test_case for game {game_id}")
             raise ValueError("No valid crows found in test_case")
         
-        # Validate grid size
-        grid_size = test_case.get('length_of_grid', 10)
-        try:
-            grid_size = int(grid_size)
-            if grid_size <= 0:
-                logger.warning(f"Invalid grid_size {grid_size} for game {game_id}, using default 10")
-                grid_size = 10
-        except (ValueError, TypeError):
-            logger.warning(f"Invalid grid_size type for game {game_id}, using default 10")
-            grid_size = 10
-            
-        # Validate number of walls
-        num_walls = test_case.get('num_of_walls', 0)
-        try:
-            num_walls = int(num_walls)
-            if num_walls < 0:
-                logger.warning(f"Invalid num_walls {num_walls} for game {game_id}, using 0")
-                num_walls = 0
-        except (ValueError, TypeError):
-            logger.warning(f"Invalid num_walls type for game {game_id}, using 0")
-            num_walls = 0
+        # Quick validation
+        grid_size = max(10, int(test_case.get('length_of_grid', 10)))
+        num_walls = max(0, int(test_case.get('num_of_walls', 0)))
         
         self.games[game_id] = {
             'crows': crows,
@@ -103,11 +76,11 @@ class FogOfWallGame:
             'scan_results': {},  # Store scan results for each position
             'move_count': 0,
             'game_complete': False,
-            'max_moves': grid_size * grid_size,  # Use full grid size for move limit
-            'recent_moves': deque(maxlen=10),  # Track recent moves to prevent loops
+            'max_moves': min(50, max(20, num_walls * 2)),  # Much more aggressive limit
+            'recent_moves': deque(maxlen=5),  # Shorter memory to detect loops faster
             'stuck_count': 0  # Count consecutive moves to same area
         }
-        logger.info(f"Started new game {game_id} with {len(crows)} crows, grid_size={grid_size}, num_walls={num_walls}")
+        # Game initialized successfully
         
     def get_crow_position(self, game_id, crow_id):
         """Get current position of a crow"""
@@ -202,177 +175,93 @@ class MazeExplorer:
         Determine the best next action for any crow using optimized exploration
         Returns (crow_id, action_type, direction_or_none)
         """
-        # Check if we should submit early (found enough walls or running out of moves)
+        # Fast timeout checks
         walls_found = len(game_state['discovered_walls'])
         total_walls = game_state['num_walls']
         moves_used = game_state['move_count']
-        max_moves = game_state['max_moves']
+        max_moves = min(game_state['max_moves'], total_walls * 3)  # Much more aggressive limit
         
-        # Check for loops (repeated move patterns)
-        recent_moves = game_state.get('recent_moves', deque())
-        if len(recent_moves) >= 6:
-            # Check if we're repeating the same 3-move pattern
-            last_3 = list(recent_moves)[-3:]
-            if len(set(last_3)) == 1:  # All 3 moves are identical
-                logger.warning(f"Detected loop pattern, submitting early: {last_3}")
-                return None, 'submit', None
+        # Aggressive early submission for efficiency
+        efficiency_threshold = max(20, total_walls * 2)  # Much lower threshold
         
-        # Aggressive submission strategy for better efficiency
-        # Submit early if we found all walls or are running out of moves
         if (walls_found >= total_walls or 
-            moves_used >= max_moves):
-            logger.info(f"Submitting: walls={walls_found}/{total_walls}, moves={moves_used}/{max_moves}")
+            moves_used >= max_moves or
+            moves_used >= efficiency_threshold):
             return None, 'submit', None
         
-        # Strategy: Multi-crow coordinated exploration for maximum wall discovery
+        # Quick loop detection
+        recent_moves = game_state.get('recent_moves', deque())
+        if len(recent_moves) >= 4:
+            if len(set(recent_moves)) <= 2:  # Too much repetition
+                return None, 'submit', None
         
-        # First, find the best scanning opportunity across all crows
-        best_scan_crow = None
-        best_scan_score = -1
-        
+        # Fast scanning strategy - prioritize high-value scans only
         for crow_id, crow_pos in crows.items():
             if not crow_pos or not isinstance(crow_pos, dict):
                 continue
             x, y = crow_pos['x'], crow_pos['y']
             
-            # Skip if already scanned this position
-            if (x, y) in game_state['scan_results']:
-                continue
-            
-            # Calculate scan value for this position
-            scan_score = self._calculate_scan_value(x, y, game_state)
-            if scan_score > best_scan_score:
-                best_scan_score = scan_score
-                best_scan_crow = crow_id
-                
-        # Only scan if the score is high enough (avoid wasteful scanning)
-        if best_scan_crow and best_scan_score > 3:
-            logger.info(f"Scanning with crow {best_scan_crow} at position {crows[best_scan_crow]} (score: {best_scan_score})")
-            return best_scan_crow, 'scan', None
-        
-        # If no good scanning opportunities, coordinate movement across all crows
-        # Prioritize moving to unexplored areas with high wall potential
-        
-        # Multi-crow coordinated movement strategy
-        # Find the best move across all crows, prioritizing different exploration areas
-        best_crow = None
-        best_direction = None
-        best_score = -1
-        
-        # Track which crows have been considered to avoid clustering
-        considered_crows = set()
-        
-        for crow_id, crow_pos in crows.items():
-            if not crow_pos or not isinstance(crow_pos, dict):
-                continue
-                
-            x = crow_pos.get('x')
-            y = crow_pos.get('y')
-            
-            if x is None or y is None:
-                continue
-            
-            # Try each direction and score the move
-            for direction in ['N', 'S', 'E', 'W']:
-                if not self._is_valid_move(crow_pos, direction, game_state):
-                    continue
-                    
-                new_x, new_y = self._get_new_position(x, y, direction)
-                
-                # Calculate score for this move
-                score = self._calculate_move_score(new_x, new_y, game_state)
-                
-                # Bonus for crows that haven't been used recently
-                if crow_id not in considered_crows:
-                    score += 5
-                
-                # Penalty for moving to recently explored areas (unless high value)
-                if (new_x, new_y) in game_state['explored_cells'] and score < 10:
-                    score *= 0.5  # Reduce score but don't eliminate
-                
-                if score > best_score:
-                    best_score = score
-                    best_crow = crow_id
-                    best_direction = direction
-        
-        if best_crow and best_direction:
-            logger.info(f"Moving crow {best_crow} {best_direction} from {crows[best_crow]} (score: {best_score})")
-            return best_crow, 'move', best_direction
-        
-        # If no good moves found, try any valid move (even to explored areas)
-        for crow_id, crow_pos in crows.items():
-            if not crow_pos or not isinstance(crow_pos, dict):
-                continue
-                
-            x = crow_pos.get('x')
-            y = crow_pos.get('y')
-            
-            if x is None or y is None:
-                continue
-            
-            # Try each direction for any valid move
-            for direction in ['N', 'S', 'E', 'W']:
-                if not self._is_valid_move(crow_pos, direction, game_state):
-                    continue
-                    
-                new_x, new_y = self._get_new_position(x, y, direction)
-                
-                # Even if explored, try to move there if it's not a wall
-                logger.info(f"Fallback move: crow {crow_id} {direction} to explored area")
-                return crow_id, 'move', direction
-        
-        # If absolutely no moves possible, submit what we have
-        # But first, try one more scan if we haven't found all walls
-        if walls_found < total_walls:
-            for crow_id, crow_pos in crows.items():
-                if not crow_pos or not isinstance(crow_pos, dict):
-                    continue
-                x, y = crow_pos['x'], crow_pos['y']
-                if (x, y) not in game_state['scan_results']:
-                    logger.info(f"Last attempt: scanning with crow {crow_id} at position {crow_pos}")
+            # Only scan if not already scanned and likely to find walls
+            if (x, y) not in game_state['scan_results']:
+                # Quick scan value calculation
+                scan_value = self._quick_scan_value(x, y, game_state)
+                if scan_value > 8:  # Higher threshold for scanning
                     return crow_id, 'scan', None
         
-        logger.warning("No valid moves found, submitting current results")
+        # Fast movement strategy - simple frontier exploration
+        for crow_id, crow_pos in crows.items():
+            if not crow_pos or not isinstance(crow_pos, dict):
+                continue
+                
+            x, y = crow_pos.get('x'), crow_pos.get('y')
+            if x is None or y is None:
+                continue
+            
+            # Try directions in order of priority
+            for direction in ['N', 'E', 'S', 'W']:  # Prioritize up and right
+                if self._is_valid_move(crow_pos, direction, game_state):
+                    new_x, new_y = self._get_new_position(x, y, direction)
+                    
+                    # Only move to unexplored areas
+                    if (new_x, new_y) not in game_state['explored_cells']:
+                        return crow_id, 'move', direction
+        
+        # If no good moves, submit immediately
         return None, 'submit', None
     
-    def _calculate_move_score(self, x, y, game_state):
-        """Calculate how valuable it would be to move to position (x, y)"""
+    def _quick_scan_value(self, x, y, game_state):
+        """Fast scan value calculation"""
         if not (0 <= x < self.grid_size and 0 <= y < self.grid_size):
             return 0
             
-        # Check if position is already explored
-        if (x, y) in game_state['explored_cells']:
-            return 1  # Small score for re-exploration if needed
-            
-        # Check if position is a known wall
-        if (x, y) in game_state['discovered_walls']:
-            return 0
-            
-        # Base score for unexplored position
-        score = 30
-        
-        # Check for nearby unexplored areas
-        unexplored_nearby = 0
-        for dx in range(-2, 3):
-            for dy in range(-2, 3):
+        # Count unexplored cells in 3x3 area (smaller for speed)
+        unexplored = 0
+        for dx in range(-1, 2):
+            for dy in range(-1, 2):
                 check_x, check_y = x + dx, y + dy
                 if (0 <= check_x < self.grid_size and 0 <= check_y < self.grid_size):
                     if (check_x, check_y) not in game_state['explored_cells']:
-                        unexplored_nearby += 1
+                        unexplored += 1
         
-        score += unexplored_nearby * 2
-        
-        # Distance calculation for frontier exploration
+        return unexplored * 3
+    
+    def _calculate_move_score(self, x, y, game_state):
+        """Fast move score calculation"""
+        if not (0 <= x < self.grid_size and 0 <= y < self.grid_size):
+            return 0
+            
+        # Fast checks
+        if (x, y) in game_state['explored_cells']:
+            return 1  # Low score for explored
+        if (x, y) in game_state['discovered_walls']:
+            return 0  # No score for walls
+            
+        # Simple score based on distance from explored areas
         if game_state['explored_cells']:
-            min_distance = min(abs(x - ex) + abs(y - ey) 
-                             for ex, ey in game_state['explored_cells'])
-            # Bonus for being on the frontier (distance 1-3 from explored)
-            if 1 <= min_distance <= 3:
-                score += 10
-        else:
-            score += 20
-        
-        return score
+            min_dist = min(abs(x - ex) + abs(y - ey) 
+                          for ex, ey in list(game_state['explored_cells'])[:10])  # Limit for speed
+            return max(10, 20 - min_dist)
+        return 20
         
         
                 
@@ -383,7 +272,7 @@ class MazeExplorer:
         
             
     def _calculate_scan_value(self, x, y, game_state):
-        """Calculate how valuable it would be to scan at position (x, y)"""
+        """Fast scan value calculation"""
         if not (0 <= x < self.grid_size and 0 <= y < self.grid_size):
             return 0
             
@@ -391,26 +280,15 @@ class MazeExplorer:
         if (x, y) in game_state['scan_results']:
             return 0
             
+        # Simple calculation - just count nearby unexplored cells
         value = 0
-        
-        # Count unexplored cells in 5x5 area
-        unexplored_count = 0
-        for dx in range(-2, 3):
-            for dy in range(-2, 3):
+        for dx in range(-1, 2):  # Smaller area for speed
+            for dy in range(-1, 2):
                 check_x, check_y = x + dx, y + dy
                 if (0 <= check_x < self.grid_size and 0 <= check_y < self.grid_size):
                     if (check_x, check_y) not in game_state['explored_cells']:
-                        unexplored_count += 1
+                        value += 2
         
-        # Higher value for areas with more unexplored cells
-        value += unexplored_count * 4
-        
-        # Bonus for positions near discovered walls (wall clustering)
-        if game_state['discovered_walls']:
-            wall_proximity = sum(1 for wall_x, wall_y in game_state['discovered_walls']
-                               if abs(x - wall_x) + abs(y - wall_y) <= 3)
-            value += wall_proximity * 2
-            
         return value
         
     def _is_valid_move(self, crow_pos, direction, game_state):
@@ -463,6 +341,8 @@ def fog_of_wall():
     Main endpoint for Fog of Wall game
     Handles initial setup, move results, scan results, and submissions
     """
+    start_time = time.time()  # Track execution time for timeout prevention
+    
     try:
         # Fast JSON parsing without extensive logging for production
         try:
@@ -476,164 +356,117 @@ def fog_of_wall():
         challenger_id = payload.get('challenger_id')
         game_id = payload.get('game_id')
         
-        # Minimal logging for production performance
-        has_test_case = 'test_case' in payload and payload['test_case'] is not None and payload['test_case'] != 'null'
-        has_previous_action = 'previous_action' in payload and payload['previous_action'] is not None
-        
-        # Only log essential info to avoid slowing down responses
-        logger.info(f"Request: {challenger_id}/{game_id}, test_case={has_test_case}, prev_action={has_previous_action}")
-        
         if not challenger_id or not game_id:
             return jsonify({'error': 'Missing challenger_id or game_id'}), 400
+        
+        # Timeout check - if we've been running too long, submit immediately
+        if time.time() - start_time > 1.0:  # 1 second timeout
+            if game_id in game_manager.games:
+                discovered_walls = game_manager.get_discovered_walls(game_id)
+                return jsonify({
+                    'challenger_id': challenger_id,
+                    'game_id': game_id,
+                    'action_type': 'submit',
+                    'submission': discovered_walls
+                })
+            else:
+                return jsonify({'error': 'Timeout and no game state'}), 500
+        
+        # Minimal logging for production performance
+        has_test_case = 'test_case' in payload and payload['test_case'] is not None
+        has_previous_action = 'previous_action' in payload and payload['previous_action'] is not None
             
         # Check if this is an initial request with valid test_case data
-        if 'test_case' in payload and payload['test_case'] is not None and payload['test_case'] != 'null':
+        if has_test_case:
             test_case = payload['test_case']
             
-            # Add validation for test_case
+            # Quick validation
             if not isinstance(test_case, dict):
-                logger.error(f"Invalid test_case type: {type(test_case)}, value: {test_case}")
-                return jsonify({'error': 'Invalid test_case data - must be a dictionary'}), 400
+                return jsonify({'error': 'Invalid test_case data'}), 400
                 
-            # Validate crows data before starting game
             crows_data = test_case.get('crows', [])
-            if not crows_data or not isinstance(crows_data, list):
-                logger.error(f"Invalid crows data: {crows_data}")
-                return jsonify({'error': 'No valid crows data found in test_case'}), 400
+            if not crows_data:
+                return jsonify({'error': 'No crows data'}), 400
                 
-            # Check if game already exists
-            if game_id in game_manager.games:
-                logger.warning(f"Game {game_id} already exists, restarting with new test case")
-                # Restart the game with the new test case
-                try:
-                    game_manager.start_new_game(game_id, test_case)
-                except Exception as e:
-                    logger.error(f"Failed to restart game: {str(e)}")
-                    return jsonify({'error': f'Failed to restart game: {str(e)}'}), 400
-            else:
-                # Initialize new game
-                try:
-                    game_manager.start_new_game(game_id, test_case)
-                except Exception as e:
-                    logger.error(f"Failed to start new game: {str(e)}")
-                    return jsonify({'error': f'Failed to start new game: {str(e)}'}), 400
+            # Initialize new game quickly
+            try:
+                game_manager.start_new_game(game_id, test_case)
+            except Exception as e:
+                return jsonify({'error': f'Failed to start game: {str(e)}'}), 400
             
-            # Get initial action
+            # Quick action - start with first crow scan
             game_state = game_manager.games[game_id]
             crows = game_state['crows']
             
-            # Check if we have any crows
             if not crows:
                 return jsonify({'error': 'No crows available'}), 400
                 
-            # Start with scanning at initial positions
-            # Choose the crow with the best initial scan potential
-            best_crow = None
-            best_score = -1
+            # Just use first crow for initial scan
+            first_crow_id = list(crows.keys())[0]
+            return jsonify({
+                'challenger_id': challenger_id,
+                'game_id': game_id,
+                'crow_id': first_crow_id,
+                'action_type': 'scan'
+            })
             
-            # Create a temporary explorer to calculate scan values
-            temp_explorer = MazeExplorer(game_state['grid_size'])
-            
-            for crow_id, crow_pos in crows.items():
-                if not crow_pos or not isinstance(crow_pos, dict):
-                    continue
-                x, y = crow_pos['x'], crow_pos['y']
-                score = temp_explorer._calculate_scan_value(x, y, game_state)
-                if score > best_score:
-                    best_score = score
-                    best_crow = crow_id
-            
-            if best_crow:
-                return jsonify({
-                    'challenger_id': challenger_id,
-                    'game_id': game_id,
-                    'crow_id': best_crow,
-                    'action_type': 'scan'
-                })
-            else:
-                # Fallback to first crow
-                first_crow_id = list(crows.keys())[0]
-                return jsonify({
-                    'challenger_id': challenger_id,
-                    'game_id': game_id,
-                    'crow_id': first_crow_id,
-                    'action_type': 'scan'
-                })
-            
-        # Handle previous action result
+        # Handle previous action result quickly
         previous_action = payload.get('previous_action')
         if not previous_action:
-            # If we don't have a test_case and no previous_action, this is an invalid request
-            logger.error(f"Invalid request: no test_case and no previous_action for game {game_id}")
             return jsonify({'error': 'Invalid request: must provide either test_case or previous_action'}), 400
             
         action_type = previous_action.get('your_action')
         crow_id = previous_action.get('crow_id')
         
-        # Validate that we have the required fields
         if not action_type or not crow_id:
             return jsonify({'error': 'Missing action_type or crow_id in previous_action'}), 400
             
         # Check if game exists
         if game_id not in game_manager.games:
-            logger.error(f"Game {game_id} not found when processing previous action")
             return jsonify({'error': 'Game not found'}), 404
         
+        # Process action results quickly
         if action_type == 'move':
-            # Process move result
             move_result = previous_action.get('move_result')
-            if move_result:
-                new_x, new_y = None, None
-                
-                # Handle list format [x, y]
+            if move_result and isinstance(move_result, (list, dict)):
                 if isinstance(move_result, list) and len(move_result) == 2:
                     new_x, new_y = move_result
-                # Handle dict format {x: x, y: y} or {crow_id: id, x: x, y: y}
                 elif isinstance(move_result, dict):
                     new_x = move_result.get('x')
                     new_y = move_result.get('y')
+                else:
+                    new_x, new_y = None, None
                 
-                # Validate coordinates are numbers
                 if (new_x is not None and new_y is not None and 
                     isinstance(new_x, (int, float)) and isinstance(new_y, (int, float))):
                     game_manager.update_crow_position(game_id, crow_id, int(new_x), int(new_y))
-                    logger.info(f"Updated crow {crow_id} position to ({int(new_x)}, {int(new_y)})")
-                else:
-                    logger.warning(f"Invalid move result coordinates: {move_result}")
-            else:
-                logger.warning(f"Invalid move result format: {move_result}")
-                
+                    
         elif action_type == 'scan':
-            # Process scan result
             scan_result = previous_action.get('scan_result')
             crow_pos = game_manager.get_crow_position(game_id, crow_id)
-            if crow_pos and scan_result and isinstance(scan_result, list):
-                # Validate scan result is 5x5 grid
-                if len(scan_result) == 5 and all(isinstance(row, list) and len(row) == 5 for row in scan_result):
-                    game_manager.add_scan_result(game_id, crow_id, crow_pos['x'], crow_pos['y'], scan_result)
-                else:
-                    logger.warning(f"Invalid scan result format: {scan_result}")
-            else:
-                logger.warning(f"Invalid scan result or crow position: scan_result={scan_result}, crow_pos={crow_pos}")
+            if (crow_pos and scan_result and isinstance(scan_result, list) and
+                len(scan_result) == 5 and all(isinstance(row, list) and len(row) == 5 for row in scan_result)):
+                game_manager.add_scan_result(game_id, crow_id, crow_pos['x'], crow_pos['y'], scan_result)
                 
         # Check if game is complete or move limit reached
         game_state = game_manager.games[game_id]
         
-        # More aggressive timeout handling
+        # More aggressive timeout handling - submit much earlier
         walls_found = len(game_state['discovered_walls'])
         total_walls = game_state['num_walls']
         moves_used = game_state['move_count']
-        max_moves = game_state['max_moves']
+        max_moves = min(game_state['max_moves'], total_walls * 2)  # Much more aggressive
         
-        # Aggressive submission for better efficiency
+        # Very aggressive submission for timeout prevention
         should_submit = (
-            game_manager.is_game_complete(game_id) or 
-            moves_used >= max_moves
+            walls_found >= total_walls or 
+            moves_used >= max_moves or
+            moves_used >= 30  # Hard limit to prevent timeout
         )
         
         if should_submit:
             discovered_walls = game_manager.get_discovered_walls(game_id)
-            logger.info(f"Game {game_id} completed: walls={len(discovered_walls)}/{total_walls}, moves={moves_used}/{max_moves}")
+            logger.info(f"Game {game_id} completed: walls={len(discovered_walls)}/{total_walls}, moves={moves_used}")
             return jsonify({
                 'challenger_id': challenger_id,
                 'game_id': game_id,
@@ -641,32 +474,10 @@ def fog_of_wall():
                 'submission': discovered_walls
             })
             
-        # Get next action
-        if game_id not in game_manager.games:
-            return jsonify({'error': 'Game not found'}), 404
-            
-        game_state = game_manager.games[game_id]
-        if not game_state:
-            return jsonify({'error': 'Game state is None'}), 500
-            
-        crows = game_state.get('crows', {})
-        if not crows:
-            return jsonify({'error': 'No crows available'}), 400
-            
-        grid_size = game_state.get('grid_size')
-        if not grid_size:
-            return jsonify({'error': 'Grid size not found'}), 500
-            
+        # Get next action with timeout protection
         try:
-            # Add timeout protection for algorithm execution
-            start_time = time.time()
-            explorer = MazeExplorer(grid_size)
-            next_crow, next_action, direction = explorer.get_next_action(game_state, crows)
-            
-            # Check if algorithm took too long (should be very fast)
-            execution_time = time.time() - start_time
-            if execution_time > 0.5:  # If it takes more than 500ms, something's wrong
-                logger.warning(f"Algorithm took {execution_time:.3f}s, submitting early")
+            # Final timeout check before algorithm
+            if time.time() - start_time > 2.0:  # 2 second absolute timeout
                 discovered_walls = game_manager.get_discovered_walls(game_id)
                 return jsonify({
                     'challenger_id': challenger_id,
@@ -675,9 +486,13 @@ def fog_of_wall():
                     'submission': discovered_walls
                 })
                 
+            # Very fast algorithm execution
+            grid_size = game_state.get('grid_size', 10)
+            explorer = MazeExplorer(grid_size)
+            next_crow, next_action, direction = explorer.get_next_action(game_state, crows)
+            
         except Exception as e:
-            logger.error(f"Error in get_next_action: {str(e)}")
-            # Fallback: submit what we have
+            # Immediate fallback: submit what we have
             discovered_walls = game_manager.get_discovered_walls(game_id)
             return jsonify({
                 'challenger_id': challenger_id,
