@@ -4,13 +4,32 @@ import socket
 from routes import app
 import routes.square
 import routes.ticketing_agent
-from flask import jsonify, Response
+from flask import jsonify, Response, request
 
 logger = logging.getLogger(__name__)
+
+# Add middleware to log all requests
+@app.before_request
+def log_request():
+    logger.info(f"🔍 REQUEST: {request.method} {request.path}")
+    logger.info(f"📍 Full URL: {request.url}")
+    logger.info(f"🌐 Headers: {dict(request.headers)}")
+    if request.data:
+        logger.info(f"📝 Body: {request.data.decode('utf-8', errors='ignore')}")
+    if request.args:
+        logger.info(f"🔗 Query params: {dict(request.args)}")
+
+@app.after_request  
+def log_response(response):
+    logger.info(f"✅ RESPONSE: {response.status_code}")
+    logger.info(f"📤 Response data: {response.get_data(as_text=True)[:500]}...")
+    return response
 
 
 @app.route('/', methods=['GET', 'POST'])
 def default_route():
+    logger.info("🏠 ROOT ENDPOINT CALLED")
+    logger.info(f"🔍 Method: {request.method}")
     return {
         "username": "CX8de3ce71-3cbTY",
         "password": "Gunraj@260905"
@@ -18,6 +37,8 @@ def default_route():
 
 @app.route('/api/coolcodehackteam/<username>', methods=['GET', 'POST'])
 def register_team(username):
+    logger.info(f"🎯 REGISTRATION ENDPOINT CALLED with username: {username}")
+    logger.info(f"🔍 Method: {request.method}")
     return jsonify({
         "username": "CX8de3ce71-3cbTY",
         "password": "Gunraj@260905"
@@ -26,6 +47,8 @@ def register_team(username):
 @app.route('/execute_hack', methods=['GET', 'POST'])
 def execute_hack():
     """Execute the hack automatically for challenge verification"""
+    logger.info("⚡ EXECUTE_HACK ENDPOINT CALLED")
+    logger.info(f"🔍 Method: {request.method}")
     try:
         import requests
         
@@ -89,6 +112,7 @@ def execute_hack():
 @app.route('/verify_hack', methods=['GET'])
 def verify_hack():
     """Verify that the hack was successful"""
+    logger.info("✅ VERIFY_HACK ENDPOINT CALLED")
     return jsonify({
         "challenge": "CoolCode Hacker Challenge", 
         "status": "COMPLETED",
@@ -109,6 +133,8 @@ def verify_hack():
 @app.route('/api/verify', methods=['GET', 'POST'])
 def api_verify():
     """API verification endpoint for challenge system"""
+    logger.info("🔍 API_VERIFY ENDPOINT CALLED")
+    logger.info(f"🔍 Method: {request.method}")
     return jsonify({
         "status": "SUCCESS",
         "challenge": "peer_score_override", 
@@ -122,6 +148,7 @@ def api_verify():
 @app.route('/status', methods=['GET'])
 def challenge_status():
     """Challenge status endpoint"""
+    logger.info("📊 STATUS ENDPOINT CALLED")
     return jsonify({
         "challenge_id": "coolcode_hacker",
         "team": "UBS_Team-Untitled",
