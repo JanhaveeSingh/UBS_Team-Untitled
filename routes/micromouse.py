@@ -178,6 +178,12 @@ class MicromouseController:
         momentum = game['momentum']
         sensor_data = game['sensor_data']
         
+        # Ensure position is valid
+        if not isinstance(position, tuple) or len(position) != 2:
+            logger.error(f"Invalid position in exploration strategy: {position}")
+            game['position'] = (0, 0)
+            position = (0, 0)
+        
         instructions = []
         
         # If we're at the start and not moving, begin exploration
@@ -262,6 +268,11 @@ class MicromouseController:
         start = game['position']
         goal = (7, 7)  # Center of goal area
         
+        # Ensure start is a valid tuple
+        if not isinstance(start, tuple) or len(start) != 2:
+            logger.error(f"Invalid start position in pathfinding: {start}")
+            return []
+        
         if start == goal:
             return []
             
@@ -313,7 +324,11 @@ class MicromouseController:
     
     def _heuristic(self, pos1: Tuple[int, int], pos2: Tuple[int, int]) -> int:
         """Manhattan distance heuristic"""
-        return abs(pos1[0] - pos2[0]) + abs(pos1[1] - pos2[1])
+        try:
+            return abs(pos1[0] - pos2[0]) + abs(pos1[1] - pos2[1])
+        except (TypeError, IndexError) as e:
+            logger.error(f"Error in heuristic calculation: pos1={pos1}, pos2={pos2}, error={e}")
+            return 0
     
     def _path_to_instructions(self, game: Dict[str, Any], path: List[Tuple[int, int]]) -> List[str]:
         """Convert path to movement instructions"""
@@ -325,7 +340,17 @@ class MicromouseController:
         current_momentum = game['momentum']
         instructions = []
         
+        # Ensure current_pos is a valid tuple
+        if not isinstance(current_pos, tuple) or len(current_pos) != 2:
+            logger.error(f"Invalid current_pos in path_to_instructions: {current_pos}")
+            return []
+        
         for next_pos in path:
+            # Ensure next_pos is a valid tuple
+            if not isinstance(next_pos, tuple) or len(next_pos) != 2:
+                logger.error(f"Invalid next_pos in path_to_instructions: {next_pos}")
+                continue
+                
             # Calculate required movement
             dx = next_pos[0] - current_pos[0]
             dy = next_pos[1] - current_pos[1]
@@ -604,6 +629,7 @@ def micromouse():
         # Check if this is a new game or update
         if game_uuid not in game_manager.games:
             # New game - initialize
+            logger.info(f"Initializing new game {game_uuid} with payload: {payload}")
             game_manager.start_new_game(
                 game_uuid=game_uuid,
                 sensor_data=payload.get('sensor_data', [0, 0, 0, 0, 0]),
@@ -616,6 +642,7 @@ def micromouse():
             )
         else:
             # Update existing game
+            logger.info(f"Updating existing game {game_uuid} with payload: {payload}")
             try:
                 game_manager.update_game_state(game_uuid, payload)
             except Exception as e:
@@ -657,4 +684,28 @@ def get_micromouse_stats(game_uuid):
         return jsonify(stats)
     except Exception as e:
         logger.error(f"Error getting micromouse stats: {str(e)}")
+        return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
+@app.route('/micro-mouse/debug/<game_uuid>', methods=['GET'])
+def get_micromouse_debug(game_uuid):
+    """Get debug information for a specific micromouse game"""
+    try:
+        if game_uuid not in game_manager.games:
+            return jsonify({'error': 'Game not found'}), 404
+        
+        game = game_manager.games[game_uuid]
+        debug_info = {
+            'position': game['position'],
+            'position_type': str(type(game['position'])),
+            'orientation': game['orientation'],
+            'momentum': game['momentum'],
+            'sensor_data': game['sensor_data'],
+            'maze_map': dict(game['maze_map']),
+            'visited_cells': list(game['visited_cells']),
+            'run': game['run'],
+            'goal_reached': game['goal_reached']
+        }
+        return jsonify(debug_info)
+    except Exception as e:
+        logger.error(f"Error getting micromouse debug info: {str(e)}")
         return jsonify({'error': f'Internal server error: {str(e)}'}), 500
