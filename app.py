@@ -298,24 +298,6 @@ def get_score():
         "method_used": "Form data submission to /ui/profile/98ixul"
     })
 
-@app.route('/challenge/status', methods=['GET'])
-def challenge_status():
-    """Challenge status endpoint"""
-    logger.info("🎮 CHALLENGE STATUS ENDPOINT CALLED")
-    return jsonify({
-        "challenge": "CoolCode Hacker Challenge",
-        "status": "COMPLETED",
-        "progress": 100,
-        "peer_assistance": {
-            "status": "COMPLETED",
-            "target_user": "98ixul", 
-            "assignments_modified": 20,
-            "scores_set": 100
-        },
-        "completion_time": "2025-09-06T17:59:22Z",
-        "verification": "All peer scores successfully modified"
-    })
-
 @app.route('/verify_peer_scores', methods=['GET'])
 def verify_peer_scores():
     """Verify the actual scores on the CoolCode platform"""
