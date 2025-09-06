@@ -10,13 +10,6 @@ from collections import deque
 import math
 from flask import request, jsonify
 
-logger = logging.getLogger(__name__)
-
-import json
-import logging
-
-from flask import request
-
 from routes import app
 
 logger = logging.getLogger(__name__)
@@ -141,25 +134,38 @@ class MicromouseController:
         
         # Debug logging
         logger.debug(f"Game {game_uuid}: position={position}, orientation={orientation}, momentum={momentum}")
+        logger.debug(f"Position type: {type(position)}, position value: {repr(position)}")
         
         # Ensure position is valid
         if not isinstance(position, tuple) or len(position) != 2:
-            logger.error(f"Invalid position in movement strategy: {position}")
+            logger.error(f"Invalid position in movement strategy: {position}, type: {type(position)}")
             game['position'] = (0, 0)
             position = (0, 0)
         
         # Update maze map with sensor data
-        self._update_maze_map(game, position, orientation, sensor_data)
+        try:
+            self._update_maze_map(game, position, orientation, sensor_data)
+        except Exception as e:
+            logger.error(f"Error updating maze map: {str(e)}")
+            return self._exploration_strategy(game)
         
         # Use pathfinding to determine next moves
-        path = self._find_path_to_goal(game)
+        try:
+            path = self._find_path_to_goal(game)
+        except Exception as e:
+            logger.error(f"Error in pathfinding: {str(e)}")
+            return self._exploration_strategy(game)
         
         if not path:
             # No path found, use exploration strategy
             return self._exploration_strategy(game)
         
         # Convert path to movement instructions
-        instructions = self._path_to_instructions(game, path)
+        try:
+            instructions = self._path_to_instructions(game, path)
+        except Exception as e:
+            logger.error(f"Error converting path to instructions: {str(e)}")
+            return self._exploration_strategy(game)
         
         # Validate instructions
         valid_instructions = []
@@ -221,6 +227,11 @@ class MicromouseController:
     def _update_maze_map(self, game: Dict[str, Any], position: Tuple[int, int], 
                         orientation: int, sensor_data: List[int]):
         """Update the maze map based on sensor readings"""
+        # Ensure position is a valid tuple
+        if not isinstance(position, tuple) or len(position) != 2:
+            logger.error(f"Invalid position in _update_maze_map: {position}")
+            return
+            
         x, y = position
         
         # Map sensor readings to wall positions
@@ -311,6 +322,11 @@ class MicromouseController:
     
     def _get_neighbors(self, position: Tuple[int, int], maze_map: Dict) -> List[Tuple[int, int]]:
         """Get valid neighboring positions"""
+        # Ensure position is a valid tuple
+        if not isinstance(position, tuple) or len(position) != 2:
+            logger.error(f"Invalid position in _get_neighbors: {position}")
+            return []
+            
         x, y = position
         neighbors = []
         
@@ -586,6 +602,11 @@ class MicromouseController:
     
     def _is_in_goal_area(self, position: Tuple[int, int]) -> bool:
         """Check if position is in the 2x2 goal area at center"""
+        # Ensure position is a valid tuple
+        if not isinstance(position, tuple) or len(position) != 2:
+            logger.error(f"Invalid position in _is_in_goal_area: {position}")
+            return False
+            
         x, y = position
         # Goal is 2x2 at center (7,7) to (8,8)
         return 7 <= x <= 8 and 7 <= y <= 8
@@ -654,6 +675,9 @@ def micromouse():
             instructions, end_flag = game_manager.get_next_instructions(game_uuid)
         except Exception as e:
             logger.error(f"Error generating instructions: {str(e)}")
+            logger.error(f"Exception type: {type(e)}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             instructions = []
             end_flag = True
         
