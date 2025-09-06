@@ -138,6 +138,15 @@ class MicromouseController:
         momentum = game['momentum']
         sensor_data = game['sensor_data']
         
+        # Debug logging
+        logger.debug(f"Game {game_uuid}: position={position}, orientation={orientation}, momentum={momentum}")
+        
+        # Ensure position is valid
+        if not isinstance(position, tuple) or len(position) != 2:
+            logger.error(f"Invalid position in movement strategy: {position}")
+            game['position'] = (0, 0)
+            position = (0, 0)
+        
         # Update maze map with sensor data
         self._update_maze_map(game, position, orientation, sensor_data)
         
@@ -458,9 +467,14 @@ class MicromouseController:
     def update_game_state(self, game_uuid: str, new_state: Dict[str, Any]):
         """Update game state with new information from the API response"""
         if game_uuid not in self.games:
+            logger.warning(f"Game {game_uuid} not found for update")
             return
             
         game = self.games[game_uuid]
+        
+        # Ensure position is properly initialized
+        if 'position' not in game or not isinstance(game['position'], tuple):
+            game['position'] = (0, 0)
         
         # Update state fields
         if 'sensor_data' in new_state:
@@ -501,6 +515,12 @@ class MicromouseController:
         
         if momentum == 0:
             return
+            
+        # Ensure position is a valid tuple
+        if not isinstance(position, tuple) or len(position) != 2:
+            logger.error(f"Invalid position format: {position}, type: {type(position)}")
+            game['position'] = (0, 0)  # Reset to start position
+            position = (0, 0)
             
         # Calculate movement based on orientation and momentum
         dx = 0
@@ -595,10 +615,19 @@ def micromouse():
             )
         else:
             # Update existing game
-            game_manager.update_game_state(game_uuid, payload)
+            try:
+                game_manager.update_game_state(game_uuid, payload)
+            except Exception as e:
+                logger.error(f"Error updating game state: {str(e)}")
+                # Continue with instruction generation even if update fails
         
         # Generate next instructions
-        instructions, end_flag = game_manager.get_next_instructions(game_uuid)
+        try:
+            instructions, end_flag = game_manager.get_next_instructions(game_uuid)
+        except Exception as e:
+            logger.error(f"Error generating instructions: {str(e)}")
+            instructions = []
+            end_flag = True
         
         # Add thinking time if we have instructions
         if instructions and not end_flag:
