@@ -1,13 +1,16 @@
 import json
-import requests
+import logging
+from flask import request
+from routes import app
 from collections import deque, defaultdict
 import heapq
 from typing import List, Tuple, Optional, Dict, Set
 
+logger = logging.getLogger(__name__)
+
+# Global solver instance to maintain state across requests
 class MicroMouseSolver:
-    def __init__(self, endpoint_url: str):
-        self.endpoint_url = endpoint_url
-        
+    def __init__(self):
         # Maze representation (16x16 grid)
         self.maze_size = 16
         self.walls = set()  # Set of wall coordinates (x1, y1, x2, y2)
@@ -42,7 +45,23 @@ class MicroMouseSolver:
         self.exploration_phase = True
         self.path_to_goal = []
         self.current_path_index = 0
+        self.game_uuid = None
         
+    def reset_for_new_game(self, game_uuid):
+        """Reset solver state for a new game"""
+        if self.game_uuid != game_uuid:
+            self.game_uuid = game_uuid
+            self.walls = set()
+            self.visited_cells = set()
+            self.x = 0
+            self.y = 0
+            self.direction = 0
+            self.momentum = 0
+            self.exploration_phase = True
+            self.path_to_goal = []
+            self.current_path_index = 0
+            logger.info(f"Reset solver for new game: {game_uuid}")
+    
     def get_sensor_directions(self) -> List[int]:
         """Get the absolute directions for each sensor"""
         directions = []
@@ -60,8 +79,6 @@ class MicroMouseSolver:
             if has_wall:
                 # There's a wall in this direction
                 dx, dy = self.dir_vectors[sensor_dir]
-                wall_x = self.x + dx
-                wall_y = self.y + dy
                 
                 # Add wall between current cell and adjacent cell
                 if sensor_dir in [0, 4]:  # North/South
@@ -80,10 +97,10 @@ class MicroMouseSolver:
         # Normalize the wall representation
         if x1 == x2:  # Vertical wall
             min_y, max_y = min(y1, y2), max(y1, y2)
-            wall = (x1, max_y, x1 + 1, max_y) if x1 < self.maze_size - 1 else None
+            wall = (x1, max_y, x1 + 1, max_y) if max_y < self.maze_size else None
         else:  # Horizontal wall
             min_x, max_x = min(x1, x2), max(x1, x2)
-            wall = (max_x, y1, max_x, y1 + 1) if y1 < self.maze_size - 1 else None
+            wall = (max_x, y1, max_x, y1 + 1) if max_x < self.maze_size else None
         
         return wall in self.walls if wall else True
     
@@ -150,7 +167,7 @@ class MicroMouseSolver:
         dx = target_x - self.x
         dy = target_y - self.y
         
-        # Convert to direction index
+        # Convert to direction index (only cardinal directions)
         if dx == 0 and dy == 1:
             return 0  # North
         elif dx == 1 and dy == 0:
@@ -167,8 +184,12 @@ class MicroMouseSolver:
         moves = []
         current_dir = self.direction
         
+        # Only allow cardinal directions for movement
+        if target_direction not in [0, 2, 4, 6]:
+            return moves
+        
         while current_dir != target_direction:
-            # Calculate shortest rotation
+            # Calculate shortest rotation (in 45-degree increments)
             diff = (target_direction - current_dir) % 8
             if diff <= 4:
                 moves.append('R')  # Turn right (clockwise)
@@ -183,16 +204,21 @@ class MicroMouseSolver:
         """Generate movement instructions to reach target cell"""
         instructions = []
         
-        # First, turn to face the target
-        target_direction = self.get_direction_to_target(target_x, target_y)
-        turn_moves = self.calculate_turn_moves(target_direction)
-        instructions.extend(turn_moves)
+        # First, turn to face the target (only if we need to move)
+        if target_x != self.x or target_y != self.y:
+            target_direction = self.get_direction_to_target(target_x, target_y)
+            if target_direction != self.direction:
+                turn_moves = self.calculate_turn_moves(target_direction)
+                instructions.extend(turn_moves)
+                self.direction = target_direction
         
-        # Then move forward
+        # Then move forward if we're facing the right direction
         if self.momentum == 0:
-            instructions.append('F2')  # Accelerate
+            instructions.append('F2')  # Accelerate from rest
+        elif self.momentum > 0:
+            instructions.append('F1')  # Maintain forward speed
         else:
-            instructions.append('F1')  # Maintain speed
+            instructions.append('BB')  # Brake if going backward
         
         return instructions
     
@@ -206,14 +232,19 @@ class MicroMouseSolver:
         self.update_walls_from_sensors(sensor_data)
         self.visited_cells.add((self.x, self.y))
         
+        logger.info(f"Mouse at ({self.x}, {self.y}), direction: {self.direction}, momentum: {self.momentum}")
+        logger.info(f"Sensor data: {sensor_data}")
+        
         # If we've reached the goal, stop
         if game_data['goal_reached']:
+            logger.info("Goal reached! Stopping.")
             return ['BB'] if self.momentum != 0 else []
         
         # Strategy: Explore first, then find optimal path
         if self.exploration_phase:
-            # Check if we have a good understanding of the maze
+            # Switch to optimization phase after exploring enough or running out of time
             if len(self.visited_cells) > 50 or game_data['total_time_ms'] > 200000:
+                logger.info("Switching to optimization phase")
                 self.exploration_phase = False
                 self.path_to_goal = self.find_path_to_goal()
                 self.current_path_index = 1  # Skip current position
@@ -222,9 +253,10 @@ class MicroMouseSolver:
             # Follow the planned path to goal
             if self.current_path_index < len(self.path_to_goal):
                 target_x, target_y = self.path_to_goal[self.current_path_index]
+                logger.info(f"Following path to goal: target ({target_x}, {target_y})")
                 instructions = self.generate_movement_instructions(target_x, target_y)
                 
-                # Update position (simplified - assumes we move one cell per instruction batch)
+                # Update position after successful movement
                 if instructions and any(move in instructions for move in ['F1', 'F2']):
                     self.x, self.y = target_x, target_y
                     self.current_path_index += 1
@@ -235,85 +267,54 @@ class MicroMouseSolver:
             unexplored = self.find_unexplored_cell()
             if unexplored:
                 target_x, target_y = unexplored
+                logger.info(f"Exploring: target ({target_x}, {target_y})")
                 instructions = self.generate_movement_instructions(target_x, target_y)
                 
-                # Update position
+                # Update position after successful movement
                 if instructions and any(move in instructions for move in ['F1', 'F2']):
                     self.x, self.y = target_x, target_y
                 
                 return instructions
             else:
                 # All explored, find path to goal
+                logger.info("All accessible cells explored, finding path to goal")
                 self.path_to_goal = self.find_path_to_goal()
                 if self.path_to_goal and len(self.path_to_goal) > 1:
                     target_x, target_y = self.path_to_goal[1]
                     return self.generate_movement_instructions(target_x, target_y)
         
-        # Default: move forward or brake
-        if self.momentum > 0:
-            return ['BB']  # Brake if moving
-        else:
-            return ['F2']  # Try to move forward
-    
-    def solve(self, game_data: dict) -> dict:
-        """Main solver method"""
-        instructions = self.generate_instructions(game_data)
+        # Default: stop or brake safely
+        logger.info("No valid move found, braking")
+        return ['BB'] if self.momentum != 0 else []
+
+# Global solver instance
+solver = MicroMouseSolver()
+
+@app.route('/micro-mouse', methods=['POST'])
+def micromouse():
+    try:
+        data = request.get_json()
+        logger.info("Micromouse data received: {}".format(data))
         
-        return {
+        # Reset solver for new games
+        game_uuid = data.get('game_uuid')
+        solver.reset_for_new_game(game_uuid)
+        
+        # Generate instructions
+        instructions = solver.generate_instructions(data)
+        
+        result = {
             "instructions": instructions,
             "end": False
         }
-
-
-def main():
-    """Example usage"""
-    # Initialize solver with your endpoint URL
-    solver = MicroMouseSolver("http://your-endpoint-url/micro-mouse")
-    
-    # Example game data (you would receive this from the API)
-    game_data = {
-        "game_uuid": "uharhtrfunp6",
-        "sensor_data": [1, 1, 0, 0, 0],
-        "is_crashed": False,
-        "total_time_ms": 0,
-        "goal_reached": False,
-        "best_time_ms": None,
-        "run_time_ms": 0,
-        "run": 0,
-        "momentum": 0
-    }
-    
-    # Get instructions
-    response = solver.solve(game_data)
-    print(json.dumps(response, indent=2))
-
-
-if __name__ == "__main__":
-    main()
-
-
-# Usage example for HTTP requests:
-"""
-import requests
-
-def run_micromouse_solver():
-    solver = MicroMouseSolver("http://localhost:8000/micro-mouse")
-    
-    # Game loop
-    while True:
-        # Get current game state (this would come from your game server)
-        game_data = get_game_state()  # You need to implement this
         
-        # Generate response
-        response = solver.solve(game_data)
+        logger.info("Micromouse result: {}".format(result))
+        return json.dumps(result)
         
-        # Send response to server
-        result = requests.post("http://localhost:8000/micro-mouse", json=response)
-        
-        # Check if game ended
-        if response.get("end", False) or game_data.get("is_crashed", False):
-            break
-        
-        # Update solver state based on result
-        # (You may need to update mouse position based on server response)
-"""
+    except Exception as e:
+        logger.error(f"Error in micromouse route: {str(e)}")
+        # Return safe fallback response
+        return json.dumps({
+            "instructions": ["BB"],
+            "end": False
+        })
