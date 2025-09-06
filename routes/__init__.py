@@ -15,6 +15,7 @@ import routes.trading_formula
 import routes.trading_bot
 import routes.sailing_club
 import routes.micromouse
+import routes.game_2048
 
 
 # --- import blueprints ---
