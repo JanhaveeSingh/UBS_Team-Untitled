@@ -4,17 +4,22 @@ import socket
 from routes import app
 import routes.square
 import routes.ticketing_agent
-from flask import jsonify
+from flask import jsonify, Response
 
 logger = logging.getLogger(__name__)
 
 
 @app.route('/', methods=['GET', 'POST'])
 def default_route():
+    # Try returning just the team name as plain text
+    return Response("UBS_Team-Untitled", mimetype='text/plain')
+
+@app.route('/api/coolcodehackteam/<username>', methods=['GET', 'POST'])
+def register_team(username):
     return jsonify({
-        "status": "success",
-        "message": "Python Template",
-        "team": "UBS_Team-Untitled"
+        "teamName": "UBS_Team-Untitled",
+        "username": username,
+        "status": "registered"
     })
 
 
