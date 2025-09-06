@@ -4,13 +4,18 @@ import socket
 from routes import app
 import routes.square
 import routes.ticketing_agent
+from flask import jsonify
 
 logger = logging.getLogger(__name__)
 
 
 @app.route('/', methods=['GET', 'POST'])
 def default_route():
-    return 'Python Template'
+    return jsonify({
+        "status": "success",
+        "message": "Python Template",
+        "team": "UBS_Team-Untitled"
+    })
 
 
 logger = logging.getLogger()
