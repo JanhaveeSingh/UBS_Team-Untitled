@@ -2,184 +2,264 @@ import json
 import logging
 from flask import request
 from routes import app
-from collections import deque, defaultdict
-import heapq
-from typing import List, Tuple, Optional, Dict, Set
+from collections import deque
 
 logger = logging.getLogger(__name__)
 
-# Global solver instance to maintain state across requests
-class MicroMouseSolver:
+class FloodFillMicroMouse:
     def __init__(self):
-        # Maze representation (16x16 grid)
+        # Maze setup
         self.maze_size = 16
-        self.walls = set()  # Set of wall coordinates
-        self.visited_cells = set()  # Cells we've visited
+        self.goal_cells = [(7, 7), (7, 8), (8, 7), (8, 8)]
         
-        # Goal location (center 2x2)
-        self.goal_cells = {(7, 7), (7, 8), (8, 7), (8, 8)}
+        # Initialize flood values - distance to goal
+        self.flood_values = [[0 for _ in range(16)] for _ in range(16)]
         
-        # Mouse state - DON'T track position ourselves, let the game do it
-        self.facing_direction = 0  # 0=North, 2=East, 4=South, 6=West (cardinal only)
+        # Wall representation: walls[x][y] = {'N': bool, 'E': bool, 'S': bool, 'W': bool}
+        self.walls = {}
+        for x in range(16):
+            for y in range(16):
+                self.walls[(x, y)] = {'N': False, 'E': False, 'S': False, 'W': False}
         
-        # Exploration strategy
-        self.exploration_complete = False
+        # Add perimeter walls
+        for i in range(16):
+            self.walls[(i, 0)]['S'] = True
+            self.walls[(i, 15)]['N'] = True
+            self.walls[(0, i)]['W'] = True
+            self.walls[(15, i)]['E'] = True
+        
+        # Mouse state
+        self.x, self.y = 0, 0  # Position
+        self.direction = 'N'  # N, E, S, W
+        self.momentum = 0
+        
+        # Strategy
+        self.phase = 'explore'  # 'explore' or 'speed_run'
+        self.visited = set()
+        self.path = []
         self.game_uuid = None
         
-        # Simple movement strategy
-        self.last_sensor_data = None
-        self.movement_history = []
+        # Initialize flood fill
+        self.calculate_flood_fill()
+        
+        # Direction mappings
+        self.dir_map = {'N': 0, 'E': 1, 'S': 2, 'W': 3}
+        self.opposite = {'N': 'S', 'E': 'W', 'S': 'N', 'W': 'E'}
+        self.left_turn = {'N': 'W', 'W': 'S', 'S': 'E', 'E': 'N'}
+        self.right_turn = {'N': 'E', 'E': 'S', 'S': 'W', 'W': 'N'}
         
     def reset_for_new_game(self, game_uuid):
-        """Reset solver state for a new game"""
         if self.game_uuid != game_uuid:
+            self.__init__()
             self.game_uuid = game_uuid
-            self.walls = set()
-            self.visited_cells = set()
-            self.facing_direction = 0  # Start facing North
-            self.exploration_complete = False
-            self.last_sensor_data = None
-            self.movement_history = []
-            logger.info(f"Reset solver for new game: {game_uuid}")
+            logger.info(f"Reset for new game: {game_uuid}")
     
-    def can_move_forward(self, sensor_data) -> bool:
-        """Check if we can move forward based on front sensor (index 2)"""
-        return sensor_data[2] == 0  # 0 means no wall, 1 means wall
+    def calculate_flood_fill(self):
+        """Calculate flood fill values from goal cells"""
+        # Reset all values to max
+        for x in range(16):
+            for y in range(16):
+                self.flood_values[x][y] = 255
+        
+        # Initialize goal cells
+        queue = deque()
+        for gx, gy in self.goal_cells:
+            self.flood_values[gx][gy] = 0
+            queue.append((gx, gy, 0))
+        
+        # Flood fill
+        while queue:
+            x, y, distance = queue.popleft()
+            
+            # Check all 4 directions
+            for direction, (dx, dy) in [('N', (0, 1)), ('E', (1, 0)), ('S', (0, -1)), ('W', (-1, 0))]:
+                nx, ny = x + dx, y + dy
+                
+                # Check bounds
+                if 0 <= nx < 16 and 0 <= ny < 16:
+                    # Check if there's a wall blocking this direction
+                    if not self.walls[(x, y)][direction]:
+                        new_distance = distance + 1
+                        if new_distance < self.flood_values[nx][ny]:
+                            self.flood_values[nx][ny] = new_distance
+                            queue.append((nx, ny, new_distance))
     
-    def can_turn_left(self, sensor_data) -> bool:
-        """Check if we can turn left and then move (sensor index 1 = -45°, index 0 = -90°)"""
-        return sensor_data[1] == 0 or sensor_data[0] == 0
+    def update_walls_from_sensors(self, sensor_data):
+        """Update walls based on sensor readings"""
+        # Sensor positions: [-90°, -45°, 0°, 45°, 90°] relative to heading
+        directions_map = {
+            'N': ['W', 'W', 'N', 'E', 'E'],  # When facing North
+            'E': ['N', 'N', 'E', 'S', 'S'],  # When facing East  
+            'S': ['E', 'E', 'S', 'W', 'W'],  # When facing South
+            'W': ['S', 'S', 'W', 'N', 'N']   # When facing West
+        }
+        
+        sensor_dirs = directions_map[self.direction]
+        
+        # Update walls based on sensor readings
+        for i, has_wall in enumerate(sensor_data):
+            if has_wall == 1:  # Wall detected
+                wall_direction = sensor_dirs[i]
+                self.walls[(self.x, self.y)][wall_direction] = True
+                
+                # Also update adjacent cell
+                dx, dy = {'N': (0, 1), 'E': (1, 0), 'S': (0, -1), 'W': (-1, 0)}[wall_direction]
+                adj_x, adj_y = self.x + dx, self.y + dy
+                if 0 <= adj_x < 16 and 0 <= adj_y < 16:
+                    self.walls[(adj_x, adj_y)][self.opposite[wall_direction]] = True
+        
+        # Mark cell as visited
+        self.visited.add((self.x, self.y))
     
-    def can_turn_right(self, sensor_data) -> bool:
-        """Check if we can turn right and then move (sensor index 3 = +45°, index 4 = +90°)"""
-        return sensor_data[3] == 0 or sensor_data[4] == 0
+    def get_accessible_neighbors(self, x, y):
+        """Get neighboring cells that are accessible (no walls)"""
+        neighbors = []
+        for direction, (dx, dy) in [('N', (0, 1)), ('E', (1, 0)), ('S', (0, -1)), ('W', (-1, 0))]:
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < 16 and 0 <= ny < 16 and not self.walls[(x, y)][direction]:
+                neighbors.append((nx, ny, direction))
+        return neighbors
     
-    def is_dead_end(self, sensor_data) -> bool:
-        """Check if we're in a dead end (walls on front, left, and right)"""
-        front_blocked = sensor_data[2] == 1
-        left_blocked = sensor_data[1] == 1 and sensor_data[0] == 1
-        right_blocked = sensor_data[3] == 1 and sensor_data[4] == 1
-        return front_blocked and left_blocked and right_blocked
+    def find_next_move_flood_fill(self):
+        """Find next move using flood fill algorithm"""
+        current_value = self.flood_values[self.x][self.y]
+        
+        # Find the neighboring cell with lowest flood value
+        neighbors = self.get_accessible_neighbors(self.x, self.y)
+        if not neighbors:
+            return None
+        
+        best_neighbor = min(neighbors, key=lambda n: self.flood_values[n[0]][n[1]])
+        target_x, target_y, move_direction = best_neighbor
+        
+        # If current cell has higher value than neighbor, move there
+        if self.flood_values[target_x][target_y] < current_value:
+            return move_direction
+        
+        # If stuck, recalculate flood fill and try again
+        self.calculate_flood_fill()
+        neighbors = self.get_accessible_neighbors(self.x, self.y)
+        if neighbors:
+            best_neighbor = min(neighbors, key=lambda n: self.flood_values[n[0]][n[1]])
+            return best_neighbor[2]
+        
+        return None
     
-    def wall_follow_strategy(self, sensor_data, momentum) -> List[str]:
-        """Simple wall-following strategy (right-hand rule)"""
+    def calculate_turns_needed(self, target_direction):
+        """Calculate number of turns needed to face target direction"""
+        if self.direction == target_direction:
+            return 0
+        elif self.right_turn[self.direction] == target_direction:
+            return 1  # Right turn
+        elif self.left_turn[self.direction] == target_direction:
+            return -1  # Left turn
+        else:
+            return 2  # U-turn
+    
+    def generate_movement_instructions(self, target_direction):
+        """Generate movement instructions to face and move in target direction"""
         instructions = []
         
-        # If we have momentum, we need to handle it carefully
-        if momentum != 0:
-            # If we're moving and there's a wall ahead, brake
-            if sensor_data[2] == 1:  # Wall in front
+        # Calculate turns needed
+        turns_needed = self.calculate_turns_needed(target_direction)
+        
+        if turns_needed == 1:  # Right turn
+            instructions.append('R')
+            self.direction = self.right_turn[self.direction]
+        elif turns_needed == -1:  # Left turn
+            instructions.append('L')
+            self.direction = self.left_turn[self.direction]
+        elif turns_needed == 2:  # U-turn
+            instructions.extend(['R', 'R'])
+            self.direction = self.opposite[self.direction]
+        
+        # Move forward
+        if self.momentum == 0:
+            instructions.append('F2')  # Accelerate
+        else:
+            instructions.append('F1')  # Maintain speed
+        
+        # Update position
+        dx, dy = {'N': (0, 1), 'E': (1, 0), 'S': (0, -1), 'W': (-1, 0)}[target_direction]
+        self.x += dx
+        self.y += dy
+        
+        return instructions
+    
+    def solve(self, game_data):
+        """Main solving logic"""
+        self.momentum = game_data['momentum']
+        sensor_data = game_data['sensor_data']
+        goal_reached = game_data['goal_reached']
+        
+        logger.info(f"Position: ({self.x}, {self.y}), Direction: {self.direction}, Momentum: {self.momentum}")
+        logger.info(f"Sensors: {sensor_data}, Goal: {goal_reached}")
+        
+        # If goal reached, stop
+        if goal_reached:
+            if self.phase == 'explore':
+                logger.info("Goal reached in exploration phase!")
+                self.phase = 'speed_run'
+                # Reset position for speed run
+                self.x, self.y = 0, 0
+                self.direction = 'N'
+                return ['BB'] if self.momentum != 0 else []
+            else:
+                logger.info("Goal reached in speed run!")
+                return []
+        
+        # Update wall knowledge from sensors
+        self.update_walls_from_sensors(sensor_data)
+        
+        # Recalculate flood fill with new wall information
+        self.calculate_flood_fill()
+        
+        # If we have momentum, handle it carefully
+        if self.momentum != 0:
+            # Check if we can continue in current direction
+            front_sensor = sensor_data[2]  # Front sensor
+            if front_sensor == 1:  # Wall ahead
                 return ['BB']  # Brake
             else:
-                # Continue moving if path is clear
-                return ['F1']
+                return ['F1']  # Continue
         
-        # At rest (momentum = 0), we can turn or accelerate
-        # Right-hand wall following: try right, then forward, then left, then back
+        # At rest - decide next move using flood fill
+        next_direction = self.find_next_move_flood_fill()
         
-        # First, try to turn right and move
-        if self.can_turn_right(sensor_data):
-            instructions.append('R')  # Turn right 45 degrees
-            # Need another turn to face cardinal direction if needed
-            if len(instructions) == 1:  # Only turned once, might need to align
-                instructions.append('R')  # Turn right again to face cardinal
+        if next_direction:
+            instructions = self.generate_movement_instructions(next_direction)
+            logger.info(f"Moving {next_direction}, instructions: {instructions}")
             return instructions
-        
-        # If can't go right, try forward
-        elif self.can_move_forward(sensor_data):
-            return ['F2']  # Accelerate forward
-        
-        # If can't go forward, try left
-        elif self.can_turn_left(sensor_data):
-            instructions.append('L')  # Turn left 45 degrees
-            if len(instructions) == 1:  # Only turned once
-                instructions.append('L')  # Turn left again
-            return instructions
-        
-        # If all else fails, turn around (4 right turns = 180 degrees)
         else:
-            return ['R', 'R', 'R', 'R']  # Turn around
-    
-    def simple_exploration_strategy(self, sensor_data, momentum) -> List[str]:
-        """Very simple exploration: prefer forward, then right, then left, then back"""
-        
-        # If we have momentum, handle it
-        if momentum > 0:
-            if sensor_data[2] == 1:  # Wall ahead, need to brake
-                return ['BB']
-            else:
-                return ['F1']  # Keep moving forward
-        elif momentum < 0:
-            return ['BB']  # Brake if moving backward
-        
-        # At rest, decide where to go
-        # Priority: forward > right > left > back
-        if sensor_data[2] == 0:  # Can go forward
-            return ['F2']
-        elif sensor_data[3] == 0 or sensor_data[4] == 0:  # Can go right
-            return ['R']  # Turn right once (45 degrees)
-        elif sensor_data[1] == 0 or sensor_data[0] == 0:  # Can go left  
-            return ['L']  # Turn left once (45 degrees)
-        else:
-            # Turn around - do it in steps to avoid crashing
-            return ['R', 'R']  # Turn 90 degrees right
-    
-    def generate_instructions(self, game_data: dict) -> List[str]:
-        """Main logic to generate movement instructions"""
-        sensor_data = game_data['sensor_data']
-        momentum = game_data['momentum']
-        goal_reached = game_data['goal_reached']
-        total_time = game_data['total_time_ms']
-        
-        logger.info(f"Momentum: {momentum}, Sensor data: {sensor_data}")
-        
-        # If we've reached the goal, stop
-        if goal_reached:
-            logger.info("Goal reached! Stopping.")
-            return ['BB'] if momentum != 0 else []
-        
-        # If we're running out of time, try to end gracefully
-        if total_time > 280000:  # 280 seconds, leave 20 seconds buffer
-            logger.info("Time running out, ending challenge")
+            logger.info("No valid move found")
             return []
-        
-        # Use simple exploration strategy
-        try:
-            instructions = self.simple_exploration_strategy(sensor_data, momentum)
-            logger.info(f"Generated instructions: {instructions}")
-            return instructions
-        except Exception as e:
-            logger.error(f"Error generating instructions: {e}")
-            # Safe fallback: brake if moving, otherwise do nothing
-            return ['BB'] if momentum != 0 else []
 
 # Global solver instance
-solver = MicroMouseSolver()
+solver = FloodFillMicroMouse()
 
 @app.route('/micro-mouse', methods=['POST'])
 def micromouse():
     try:
         data = request.get_json()
-        logger.info("Micromouse data received: {}".format(data))
+        logger.info("Micromouse request: {}".format(data))
         
-        # Reset solver for new games
+        # Reset for new games
         game_uuid = data.get('game_uuid')
         solver.reset_for_new_game(game_uuid)
         
-        # Generate instructions
-        instructions = solver.generate_instructions(data)
+        # Get instructions from solver
+        instructions = solver.solve(data)
         
         result = {
             "instructions": instructions,
             "end": False
         }
         
-        logger.info("Micromouse result: {}".format(result))
+        logger.info("Response: {}".format(result))
         return json.dumps(result)
         
     except Exception as e:
-        logger.error(f"Error in micromouse route: {str(e)}")
-        # Return safe fallback response
+        logger.error(f"Error in micromouse: {str(e)}")
         return json.dumps({
             "instructions": ["BB"],
             "end": False
