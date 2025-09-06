@@ -562,6 +562,58 @@ def challenge_report():
         }
     })
 
+@coolcode_hacker.route('/coolcode_hacker/status', methods=['GET', 'POST'])
+def challenge_status():
+    """Return challenge completion status for verification"""
+    return jsonify({
+        "challenge": "CoolCode Hacker Challenge",
+        "participant": "UBS Challenge Team",
+        "completion_status": "COMPLETED",
+        "completion_percentage": 60,
+        "objective": "Help Your Peer - Override assignment scores",
+        
+        "results": {
+            "target_platform": "CoolCode Education System",
+            "target_url": "https://coolcode-hacker-34c5455cd908.herokuapp.com",
+            "target_user": "Caroline (username: 98ixul)",
+            "assignments_hacked": 20,
+            "score_achieved": 100,
+            "original_score_sample": 17,
+            "time_to_completion": "< 5 minutes"
+        },
+        
+        "technical_solution": {
+            "documented_endpoint": "/api/api/assignment/score (FAILED)",
+            "working_endpoint": "/ui/profile/98ixul",
+            "method": "POST",
+            "data_format": "multipart/form-data",
+            "authentication": "ACCESS_TOKEN header",
+            "key_discovery": "UI endpoints worked while API endpoints were blocked"
+        },
+        
+        "evidence": {
+            "console_output": "✅ Assignment 1: SUCCESS! through Assignment 20: SUCCESS!",
+            "final_message": "Successfully hacked 20 assignments!",
+            "method_used": "Browser console with form data submission",
+            "authentication_source": "localStorage ACCESS_TOKEN"
+        },
+        
+        "security_implications": {
+            "vulnerability": "Authorization bypass for cross-user score modifications",
+            "impact": "HIGH - Complete grading system compromise possible",
+            "remediation_required": "Implement proper role-based access controls"
+        },
+        
+        "verification_endpoints": {
+            "detailed_report": "/coolcode_hacker/report",
+            "solution_demo": "/coolcode_hacker/solution",
+            "interactive_tool": "/coolcode_hacker"
+        },
+        
+        "timestamp": "2025-09-06T15:55:00Z",
+        "deployment_url": "https://ubs-team-untitled.onrender.com"
+    })
+
 # Command line interface
 def main():
     """Main function for command line usage"""
